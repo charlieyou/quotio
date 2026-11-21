@@ -903,12 +903,16 @@ private struct MenuAccountCardView: View {
         provider == .antigravity && !data.models.isEmpty
     }
     
-    private var antigravityGroups: [AntigravityDisplayGroup] {
+    private var antigravityRows: [[AntigravityDisplayGroup]] {
         guard isAntigravity else { return [] }
         let summaryModels = data.models.filter { $0.name.hasPrefix("antigravity-") }
         if !summaryModels.isEmpty {
-            return summaryModels
-                .map { AntigravityDisplayGroup(name: $0.displayName, percentage: $0.percentage, resetTime: $0.resetTime) }
+            // Gemini on one line, Claude/GPT on the next.
+            return ["antigravity-gemini-", "antigravity-claude-gpt-"].map { prefix in
+                summaryModels
+                    .filter { $0.name.hasPrefix(prefix) }
+                    .map { AntigravityDisplayGroup(name: $0.displayName, percentage: $0.percentage, resetTime: $0.resetTime) }
+            }.filter { !$0.isEmpty }
         }
 
         var groups: [AntigravityDisplayGroup] = []
@@ -945,7 +949,7 @@ private struct MenuAccountCardView: View {
             groups.append(AntigravityDisplayGroup(name: "Claude 4.5", percentage: aggregatedPercent, resetTime: minModel?.resetTime))
         }
 
-        return groups.sorted { $0.percentage < $1.percentage }
+        return groups.isEmpty ? [] : [groups.sorted { $0.percentage < $1.percentage }]
     }
     
     var body: some View {
@@ -1050,9 +1054,12 @@ private struct MenuAccountCardView: View {
     
     private var quotaContentSection: some View {
         let isCardStyle = displayStyle == .card
+        let rows = antigravityRows.map { row in
+            row.map { ModelBadgeData(name: $0.name, percentage: $0.percentage, resetTime: $0.resetTime) }
+        }
         let models: [ModelBadgeData] = {
             if isAntigravity {
-                return antigravityGroups.map { ModelBadgeData(name: $0.name, percentage: $0.percentage, resetTime: $0.resetTime) }
+                return rows.flatMap { $0 }
             } else {
                 let meterModels = data.models.filter { !$0.isStandaloneMetric }.map {
                     ModelBadgeData(name: $0.displayName, percentage: $0.percentage, resetTime: $0.resetTime)
@@ -1083,6 +1090,12 @@ private struct MenuAccountCardView: View {
                         quotaLayout(models: section.models.map {
                             ModelBadgeData(name: $0.displayName, percentage: $0.percentage, resetTime: $0.resetTime)
                         })
+                    }
+                }
+            } else if rows.count > 1 {
+                VStack(spacing: 6) {
+                    ForEach(rows.indices, id: \.self) { index in
+                        quotaLayout(models: rows[index])
                     }
                 }
             } else if !models.isEmpty {

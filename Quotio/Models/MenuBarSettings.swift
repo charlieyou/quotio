@@ -774,22 +774,26 @@ final class MenuBarSettingsManager {
 // MARK: - Menu Bar Weekly Summary
 
 /// The menu bar shows one item per provider: the average weekly remaining across
-/// every account, so many accounts stay readable.
+/// every account (for Antigravity, its Gemini pool), so many accounts stay readable.
 nonisolated enum MenuBarWeeklySummary {
-    static let providers: [AIProvider] = [.claude, .codex]
+    static let providers: [AIProvider] = [.claude, .codex, .antigravity]
 
-    /// Weekly window names per provider. Model-scoped windows (e.g. Fable) are not the
-    /// account's overall weekly limit, so they are excluded from the average.
-    static let weeklyNames: [AIProvider: Set<String>] = [
+    /// Weekly window names per provider, in order of preference. Model-scoped windows (e.g. Fable)
+    /// are not the account's overall weekly limit, so they are excluded from the average.
+    /// Antigravity tracks the Gemini pool; Google may report only its 5-hour window.
+    static let weeklyNames: [AIProvider: [String]] = [
         .claude: ["seven-day-weekly"],
         .codex: ["codex-weekly"],
+        .antigravity: ["antigravity-gemini-weekly", "antigravity-gemini-session"],
     ]
 
     static func averageWeeklyRemaining(_ quotas: [String: ProviderQuotaData], provider: AIProvider) -> Double? {
         guard let names = weeklyNames[provider] else { return nil }
         let values = quotas.values.compactMap { data -> Double? in
             guard !data.isForbidden else { return nil }
-            return data.models.first(where: { names.contains($0.name) && $0.percentage >= 0 })?.percentage
+            return names.lazy
+                .compactMap { name in data.models.first(where: { $0.name == name && $0.percentage >= 0 }) }
+                .first?.percentage
         }
         guard !values.isEmpty else { return nil }
         return values.reduce(0, +) / Double(values.count)

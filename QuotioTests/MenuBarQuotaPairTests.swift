@@ -193,12 +193,21 @@ final class MenuBarWeeklySummaryTests: XCTestCase {
             ],
             .codex: ["x": account([("codex-session", 1), ("codex-weekly", 67)])],
             .copilot: ["y": account([("chat", 10)])],
+            .antigravity: [
+                "g": account([("antigravity-gemini-session", 80), ("antigravity-claude-gpt-weekly", 10)]),
+                // A reported Gemini weekly window wins over the session, whichever comes first.
+                "h": account([("antigravity-gemini-session", 90), ("antigravity-gemini-weekly", 40)]),
+                "i": account([("antigravity-gemini-weekly", 40), ("antigravity-gemini-session", 90)]),
+                // Claude/GPT windows are not the Gemini pool, so this account has no value.
+                "j": account([("antigravity-claude-gpt-session", 5), ("antigravity-claude-gpt-weekly", 5)]),
+            ],
         ]
 
         let items = MenuBarWeeklySummary.items(from: quotas)
 
-        XCTAssertEqual(items.map(\.provider), [.claude, .codex])
+        XCTAssertEqual(items.map(\.provider), [.claude, .codex, .antigravity])
         XCTAssertEqual(items[0].percentage, 60, accuracy: 0.001)
         XCTAssertEqual(items[1].percentage, 67, accuracy: 0.001)
+        XCTAssertEqual(items[2].percentage, (80 + 40 + 40) / 3, accuracy: 0.001)
     }
 }

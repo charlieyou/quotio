@@ -12,7 +12,8 @@ import SwiftUI
 // MARK: - App Mode (DEPRECATED)
 
 /// Represents the two primary operating modes of Quotio
-/// - Note: DEPRECATED. Use `OperatingMode` instead.
+/// - Note: DEPRECATED. Use `OperatingMode` instead which supports 3 modes:
+///   `.monitor`, `.localProxy`, `.remoteProxy`
 @available(*, deprecated, message: "Use OperatingMode instead. AppMode will be removed in a future version.")
 enum AppMode: String, Codable, CaseIterable, Identifiable {
     case full = "full"           // Proxy server + Quota tracking (current behavior)

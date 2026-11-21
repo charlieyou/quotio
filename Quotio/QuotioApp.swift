@@ -630,14 +630,17 @@ struct ContentView: View {
                               systemImage: "person.2.badge.key")
                             .tag(NavigationPage.providers)
                         
-                        if modeManager.isLocalProxyMode {
-                            Label("nav.agents".localized(), systemImage: "terminal")
-                                .tag(NavigationPage.agents)
+                        // Proxy mode only (local or remote)
+                        if modeManager.isProxyMode {
+                            if modeManager.currentMode.supportsAgentConfig {
+                                Label("nav.agents".localized(), systemImage: "terminal")
+                                    .tag(NavigationPage.agents)
+                            }
                             
                             Label("nav.apiKeys".localized(), systemImage: "key.horizontal")
                                 .tag(NavigationPage.apiKeys)
                             
-                            if loggingToFile {
+                            if modeManager.isLocalProxyMode && loggingToFile {
                                 Label("nav.logs".localized(), systemImage: "doc.text")
                                     .tag(NavigationPage.logs)
                             }
@@ -665,6 +668,8 @@ struct ContentView: View {
                     Group {
                         if modeManager.isLocalProxyMode {
                             ProxyStatusRow(viewModel: viewModel)
+                        } else if modeManager.isRemoteProxyMode {
+                            RemoteStatusRow()
                         } else {
                             QuotaRefreshStatusRow(viewModel: viewModel)
                         }
@@ -690,6 +695,7 @@ struct ContentView: View {
                             .help(viewModel.proxyManager.proxyStatus.running ? "action.stopProxy".localized() : "action.startProxy".localized())
                         }
                     } else {
+                        // Monitor or remote mode: refresh button
                         Button {
                             Task { await viewModel.manualRefresh() }
                         } label: {
@@ -724,6 +730,49 @@ struct ContentView: View {
 }
 
 // MARK: - Sidebar Status Rows
+
+/// Remote connection status row for Remote Proxy Mode
+struct RemoteStatusRow: View {
+    @State private var modeManager = OperatingModeManager.shared
+    
+    var body: some View {
+        HStack {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 8, height: 8)
+            
+            Text(statusText)
+                .font(.caption)
+            
+            Spacer()
+            
+            if let config = modeManager.remoteConfig {
+                Text(config.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+    
+    private var statusColor: Color {
+        switch modeManager.connectionStatus {
+        case .connected: return .green
+        case .connecting: return .orange
+        case .disconnected: return .gray
+        case .error: return .red
+        }
+    }
+    
+    private var statusText: String {
+        switch modeManager.connectionStatus {
+        case .connected: return "status.connected".localized()
+        case .connecting: return "status.connecting".localized()
+        case .disconnected: return "status.disconnected".localized()
+        case .error: return "status.error".localized()
+        }
+    }
+}
 
 /// Proxy status row for Local Proxy Mode
 struct ProxyStatusRow: View {

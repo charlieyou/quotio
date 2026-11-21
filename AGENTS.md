@@ -128,8 +128,12 @@ is not a Swift package.
 ## Project Gotchas
 
 - `CLIProxyManager.baseURL` must address CLIProxyAPI directly at
-  `http://127.0.0.1:<port>`, even when the proxy binds to `0.0.0.0`. Management access is
-  local-only; do not add remote bridge or fallback paths.
+  `http://127.0.0.1:<port>`, even when the proxy binds to `0.0.0.0`. Local Proxy mode never
+  falls back to a remote server.
+- Remote Proxy mode (this fork) talks to a remote CLIProxyAPI's `/v0/management` with a
+  Keychain-stored key. Quotas for remote credentials go through `POST /api-call` with
+  `$TOKEN$` (`RemoteQuotaFetcher`); never read local `~/.cli-proxy-api` files or local proxy
+  state in that mode, and clear view-model data when entering or leaving it.
 - Preserve `CLIProxyManager.killProcessOnPort` protection that refuses to terminate
   Quotio's own process.
 - `ProxyStorageManager` stores versioned binaries behind a `current` symlink. Never

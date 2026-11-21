@@ -54,8 +54,9 @@ struct ProvidersScreen: View {
     private var groupedAccounts: [AIProvider: [AccountRowData]] {
         var groups: [AIProvider: [AccountRowData]] = [:]
 
-        if modeManager.isLocalProxyMode && viewModel.proxyManager.proxyStatus.running {
-            // From proxy auth files (proxy running)
+        if (modeManager.isLocalProxyMode && viewModel.proxyManager.proxyStatus.running)
+            || modeManager.isRemoteProxyMode {
+            // From proxy auth files (local proxy running, or the remote server)
             for file in viewModel.authFiles {
                 guard let provider = file.providerType else { continue }
                 let data = AccountRowData.from(authFile: file, provider: provider)
@@ -323,7 +324,8 @@ struct ProvidersScreen: View {
                 Task {
                     if modeManager.isMonitorMode {
                         await viewModel.manualRefresh()
-                    } else if modeManager.isLocalProxyMode && viewModel.proxyManager.proxyStatus.running {
+                    } else if (modeManager.isLocalProxyMode && viewModel.proxyManager.proxyStatus.running)
+                                || modeManager.isRemoteProxyMode {
                         await viewModel.refreshData()
                     } else {
                         await viewModel.loadDirectAuthFiles()

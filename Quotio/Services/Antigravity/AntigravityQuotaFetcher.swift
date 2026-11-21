@@ -581,13 +581,13 @@ nonisolated struct AntigravityAuthFile: Codable, Sendable {
 // MARK: - Fetcher
 
 actor AntigravityQuotaFetcher {
-    private let quotaAPIURL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
-    private let quotaSummaryAPIURL = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+    nonisolated static let quotaAPIURL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
+    nonisolated static let quotaSummaryAPIURL = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
     private let loadProjectAPIURL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
     private let tokenURL = "https://oauth2.googleapis.com/token"
     private let clientId = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
     private let clientSecret = "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"
-    private let userAgent = "antigravity/1.11.3 Darwin/arm64"
+    nonisolated static let userAgent = "antigravity/1.11.3 Darwin/arm64"
     private let nativeCacheURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Quotio/Monitor/antigravity-shadow-v1.json")
 
@@ -688,13 +688,13 @@ actor AntigravityQuotaFetcher {
             return ProviderQuotaData(models: summaryModels, lastUpdated: Date())
         }
 
-        guard let url = URL(string: quotaAPIURL) else {
+        guard let url = URL(string: Self.quotaAPIURL) else {
             throw QuotaFetchError.invalidURL
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.addValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.addValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
         var payload: [String: Any] = [:]
@@ -722,23 +722,7 @@ actor AntigravityQuotaFetcher {
                     throw QuotaFetchError.httpError(httpResponse.statusCode)
                 }
 
-                let decoder = JSONDecoder()
-                let quotaResponse = try decoder.decode(QuotaAPIResponse.self, from: data)
-
-                var models: [ModelQuota] = []
-
-                for (name, info) in quotaResponse.models {
-                    guard name.contains("gemini") || name.contains("claude") else { continue }
-
-                    if let quotaInfo = info.quotaInfo {
-                        // Clamp to 0-100 range (API can return remainingFraction > 1.0)
-                        let percentage = min(100, max(0, (quotaInfo.remainingFraction ?? 0) * 100))
-                        let resetTime = quotaInfo.resetTime ?? ""
-                        models.append(ModelQuota(name: name, percentage: percentage, resetTime: resetTime))
-                    }
-                }
-
-                return ProviderQuotaData(models: models, lastUpdated: Date())
+                return ProviderQuotaData(models: try Self.parseAvailableModels(from: data), lastUpdated: Date())
 
             } catch {
                 lastError = error
@@ -760,7 +744,7 @@ actor AntigravityQuotaFetcher {
         }
 
         for payload in payloads {
-            guard let data = try? await postCloudCode(urlString: quotaSummaryAPIURL, accessToken: accessToken, payload: payload),
+            guard let data = try? await postCloudCode(urlString: Self.quotaSummaryAPIURL, accessToken: accessToken, payload: payload),
                   let models = Self.parseQuotaSummaryModels(from: data),
                   !models.isEmpty else {
                 continue
@@ -779,7 +763,7 @@ actor AntigravityQuotaFetcher {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.addValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.addValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
@@ -794,7 +778,21 @@ actor AntigravityQuotaFetcher {
         return data
     }
 
-    private static func parseQuotaSummaryModels(from data: Data) -> [ModelQuota]? {
+    nonisolated static func parseAvailableModels(from data: Data) throws -> [ModelQuota] {
+        let quotaResponse = try JSONDecoder().decode(QuotaAPIResponse.self, from: data)
+        var models: [ModelQuota] = []
+        for (name, info) in quotaResponse.models {
+            guard name.contains("gemini") || name.contains("claude") else { continue }
+            if let quotaInfo = info.quotaInfo {
+                // Clamp to 0-100 range (API can return remainingFraction > 1.0)
+                let percentage = min(100, max(0, (quotaInfo.remainingFraction ?? 0) * 100))
+                models.append(ModelQuota(name: name, percentage: percentage, resetTime: quotaInfo.resetTime ?? ""))
+            }
+        }
+        return models
+    }
+
+    nonisolated static func parseQuotaSummaryModels(from data: Data) -> [ModelQuota]? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let groups = quotaSummaryGroups(from: root) else {
             return nil
@@ -952,7 +950,7 @@ actor AntigravityQuotaFetcher {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.addValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.addValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let payload = ["metadata": ["ideType": "ANTIGRAVITY"]]

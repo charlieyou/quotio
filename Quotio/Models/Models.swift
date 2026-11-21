@@ -372,10 +372,38 @@ nonisolated struct AuthFile: Codable, Identifiable, Hashable, Sendable {
     let createdAt: String?
     let updatedAt: String?
     let lastRefresh: String?
+    var projectId: String? = nil
+    /// Codex ID-token claims the proxy decodes for remote clients.
+    var idToken: CodexIDTokenClaims? = nil
+
+    nonisolated struct CodexIDTokenClaims: Codable, Hashable, Sendable {
+        let chatgptAccountId: String?
+        let planType: String?
+
+        enum CodingKeys: String, CodingKey {
+            case chatgptAccountId = "chatgpt_account_id"
+            case planType = "plan_type"
+        }
+
+        init(chatgptAccountId: String?, planType: String?) {
+            self.chatgptAccountId = chatgptAccountId
+            self.planType = planType
+        }
+
+        /// Tolerates proxy versions that send `id_token` as a raw string, so one
+        /// unexpected shape cannot fail decoding of the whole auth-file list.
+        init(from decoder: Decoder) throws {
+            let container = try? decoder.container(keyedBy: CodingKeys.self)
+            chatgptAccountId = try? container?.decodeIfPresent(String.self, forKey: .chatgptAccountId)
+            planType = try? container?.decodeIfPresent(String.self, forKey: .planType)
+        }
+    }
     
     enum CodingKeys: String, CodingKey {
         case id, name, provider, label, status, disabled, unavailable, source, path, email, account
         case authIndex = "auth_index"
+        case projectId = "project_id"
+        case idToken = "id_token"
         case statusMessage = "status_message"
         case runtimeOnly = "runtime_only"
         case accountType = "account_type"

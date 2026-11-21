@@ -10,13 +10,15 @@ import SwiftUI
 enum OnboardingStep: Int, CaseIterable {
     case welcome = 0
     case modeSelection = 1
-    case providers = 2
-    case completion = 3
+    case remoteSetup = 2
+    case providers = 3
+    case completion = 4
     
     var title: String {
         switch self {
         case .welcome: return "onboarding.step.welcome".localizedStatic()
         case .modeSelection: return "onboarding.step.mode".localizedStatic()
+        case .remoteSetup: return "onboarding.step.remote".localizedStatic()
         case .providers: return "onboarding.step.providers".localizedStatic()
         case .completion: return "onboarding.step.completion".localizedStatic()
         }
@@ -28,11 +30,17 @@ enum OnboardingStep: Int, CaseIterable {
 final class OnboardingViewModel {
     var currentStep: OnboardingStep = .welcome
     var selectedMode: OperatingMode = .monitor
+    var remoteEndpoint: String = ""
+    var remoteManagementKey: String = ""
     var direction: SlideDirection = .forward
     @ObservationIgnored private let modeManager = OperatingModeManager.shared
     
     var visibleSteps: [OnboardingStep] {
-        [.welcome, .modeSelection, .providers, .completion]
+        if selectedMode == .remoteProxy {
+            return [.welcome, .modeSelection, .remoteSetup, .providers, .completion]
+        } else {
+            return [.welcome, .modeSelection, .providers, .completion]
+        }
     }
     
     var currentStepIndex: Int {
@@ -41,6 +49,30 @@ final class OnboardingViewModel {
     
     var totalSteps: Int {
         visibleSteps.count
+    }
+    
+    var canGoBack: Bool {
+        currentStepIndex > 0
+    }
+    
+    var canGoNext: Bool {
+        switch currentStep {
+        case .welcome:
+            return true
+        case .modeSelection:
+            return true
+        case .remoteSetup:
+            return isRemoteConfigValid
+        case .providers:
+            return true
+        case .completion:
+            return true
+        }
+    }
+    
+    var isRemoteConfigValid: Bool {
+        let validation = RemoteURLValidator.validate(remoteEndpoint)
+        return validation.isValid && !remoteManagementKey.isEmpty
     }
     
     func goNext() {
@@ -60,7 +92,15 @@ final class OnboardingViewModel {
     }
     
     func completeOnboarding() {
-        modeManager.completeOnboarding(mode: selectedMode)
+        if selectedMode == .remoteProxy {
+            let config = RemoteConnectionConfig(
+                endpointURL: remoteEndpoint,
+                displayName: "Remote Server"
+            )
+            modeManager.switchToRemote(config: config, managementKey: remoteManagementKey, fromOnboarding: true)
+        } else {
+            modeManager.completeOnboarding(mode: selectedMode)
+        }
     }
 }
 
@@ -96,6 +136,8 @@ struct OnboardingFlow: View {
             WelcomeStep(viewModel: viewModel)
         case .modeSelection:
             ModeSelectionStep(viewModel: viewModel)
+        case .remoteSetup:
+            RemoteSetupStep(viewModel: viewModel)
         case .providers:
             ProviderStep(viewModel: viewModel)
         case .completion:

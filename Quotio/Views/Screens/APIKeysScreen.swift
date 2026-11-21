@@ -13,10 +13,17 @@ struct APIKeysScreen: View {
     @State private var editingKeyIndex: Int? = nil
     @State private var editedKeyValue: String = ""
     @State private var showingAddKey: Bool = false
+    @State private var modeManager = OperatingModeManager.shared
+
+    private var isAPIAvailable: Bool {
+        modeManager.isRemoteProxyMode
+            ? modeManager.connectionStatus.isConnected
+            : viewModel.proxyManager.proxyStatus.running
+    }
     
     var body: some View {
         Group {
-            if !viewModel.proxyManager.proxyStatus.running {
+            if !isAPIAvailable {
                 proxyNotRunningView
             } else {
                 apiKeysListView
@@ -24,7 +31,7 @@ struct APIKeysScreen: View {
         }
         .navigationTitle("nav.apiKeys".localized())
         .toolbar {
-            if viewModel.proxyManager.proxyStatus.running {
+            if isAPIAvailable {
                 ToolbarItemGroup {
                     Button {
                         newAPIKey = generateRandomKey()
@@ -49,7 +56,11 @@ struct APIKeysScreen: View {
         ProxyRequiredView(
             description: "apiKeys.proxyRequired".localized()
         ) {
-            await viewModel.startProxy()
+            if modeManager.isRemoteProxyMode {
+                await viewModel.reconnectRemote()
+            } else {
+                await viewModel.startProxy()
+            }
         }
     }
     

@@ -78,6 +78,9 @@ final class QuotaViewModel {
     }
 
     func supportsScopedRefresh(for provider: AIProvider) -> Bool {
+        if modeManager.isRemoteProxyMode {
+            return RemoteQuotaFetcher.supportedProviders.contains(provider)
+        }
         switch provider {
         case .qwen, .iflow, .vertex:
             return false
@@ -211,6 +214,8 @@ final class QuotaViewModel {
 
     /// Save disabled auth file names to UserDefaults
     private func saveDisabledAuthFiles(_ names: Set<String>) {
+        // This list is replayed onto the local proxy at start; remote filenames do not belong in it.
+        guard !modeManager.isRemoteProxyMode else { return }
         UserDefaults.standard.set(Array(names), forKey: Self.disabledAuthFilesKey)
     }
 
@@ -357,10 +362,17 @@ final class QuotaViewModel {
         }
     }
     
+    /// Whether management calls (warmup, account actions) can reach a proxy in the current mode.
+    private var isManagementAPIAvailable: Bool {
+        modeManager.isRemoteProxyMode
+            ? modeManager.connectionStatus.isConnected
+            : proxyManager.proxyStatus.running
+    }
+
     private func restartAutoRefresh() {
         if modeManager.isMonitorMode {
             startQuotaOnlyAutoRefresh()
-        } else if proxyManager.proxyStatus.running {
+        } else if proxyManager.proxyStatus.running || modeManager.isRemoteProxyMode {
             startAutoRefresh()
         } else {
             startQuotaAutoRefreshWithoutProxy()
@@ -369,8 +381,19 @@ final class QuotaViewModel {
     
     // MARK: - Mode-Aware Initialization
 
+    /// Mode the view-model state currently belongs to; data never crosses into another mode.
+    @ObservationIgnored private var initializedMode: OperatingMode?
+
     func initialize() async {
-        if modeManager.isMonitorMode {
+        if let previous = initializedMode, previous != modeManager.currentMode,
+           previous == .remoteProxy || modeManager.isRemoteProxyMode {
+            await resetForModeChange()
+        }
+        initializedMode = modeManager.currentMode
+
+        if modeManager.isRemoteProxyMode {
+            await initializeRemoteMode()
+        } else if modeManager.isMonitorMode {
             await initializeQuotaOnlyMode()
         } else {
             await initializeFullMode()
@@ -378,6 +401,11 @@ final class QuotaViewModel {
     }
 
     private func initializeFullMode() async {
+        // A running local proxy needs its local client back (the remote one was dropped on the mode change).
+        if proxyManager.proxyStatus.running && _apiClient == nil {
+            setupAPIClient()
+        }
+
         // Always refresh quotas directly first (works without proxy)
         await refreshQuotasUnified()
         
@@ -415,6 +443,71 @@ final class QuotaViewModel {
         
         // Start auto-refresh for quota-only mode
         startQuotaOnlyAutoRefresh()
+    }
+    
+    /// Clears everything that belongs to the previous server so Remote never shows this Mac's
+    /// accounts and Local/Monitor never act on (or display) the remote server's.
+    private func resetForModeChange() async {
+        refreshTask?.cancel()
+        refreshTask = nil
+        if let existingClient = _apiClient {
+            _apiClient = nil
+            await existingClient.invalidate()
+        }
+        authFiles = []
+        apiKeys = []
+        usageStats = nil
+        providerQuotas = [:]
+        subscriptionInfos = [:]
+        lastQuotaRefresh = nil
+        errorMessage = nil
+        if !modeManager.isRemoteProxyMode {
+            loadPersistedIDEQuotas()
+        }
+        notifyQuotaDataChanged()
+    }
+
+    private func initializeRemoteMode() async {
+        guard modeManager.hasValidRemoteConfig,
+              let config = modeManager.remoteConfig,
+              let managementKey = modeManager.remoteManagementKey else {
+            modeManager.setConnectionStatus(.error("No valid remote configuration"))
+            return
+        }
+        
+        modeManager.setConnectionStatus(.connecting)
+        
+        await setupRemoteAPIClient(config: config, managementKey: managementKey)
+        
+        guard let client = apiClient else {
+            modeManager.setConnectionStatus(.error("Failed to create API client"))
+            return
+        }
+        
+        let isConnected = await client.checkProxyResponding()
+        
+        if isConnected {
+            modeManager.markConnected()
+            await refreshData()
+            startAutoRefresh()
+        } else {
+            modeManager.setConnectionStatus(.error("Could not connect to remote server"))
+            // Keep retrying (e.g. launched at login before the network is up).
+            startAutoRefresh()
+        }
+    }
+    
+    private func setupRemoteAPIClient(config: RemoteConnectionConfig, managementKey: String) async {
+        if let existingClient = _apiClient {
+            await existingClient.invalidate()
+        }
+        
+        _apiClient = ManagementAPIClient(config: config, managementKey: managementKey)
+    }
+    
+    func reconnectRemote() async {
+        guard modeManager.isRemoteProxyMode else { return }
+        await initializeRemoteMode()
     }
     
     // MARK: - Direct Auth File Management (Quota-Only Mode)
@@ -818,9 +911,15 @@ final class QuotaViewModel {
             }
         }
         
-        let monitorItems = modeManager.isMonitorMode
-            ? monitorAccounts.filter { !$0.isDisabled }.map { ($0.provider, $0.accountKey) }
-            : directAuthFiles.map { ($0.provider, $0.menuBarAccountKey) }
+        let monitorItems: [(AIProvider, String)]
+        if modeManager.isMonitorMode {
+            monitorItems = monitorAccounts.filter { !$0.isDisabled }.map { ($0.provider, $0.accountKey) }
+        } else if modeManager.isRemoteProxyMode {
+            // This Mac's auth files are not the remote server's accounts.
+            monitorItems = []
+        } else {
+            monitorItems = directAuthFiles.map { ($0.provider, $0.menuBarAccountKey) }
+        }
         for (provider, accountKey) in monitorItems {
             let item = MenuBarQuotaItem(provider: provider.rawValue, accountKey: accountKey)
             if !seen.contains(item.id) {
@@ -1133,7 +1232,7 @@ final class QuotaViewModel {
         let targets = warmupTargets()
         guard !targets.isEmpty else { return }
         
-        guard proxyManager.proxyStatus.running else {
+        guard isManagementAPIAvailable else {
             let now = Date()
             for target in targets {
                 let mode = warmupSettings.warmupScheduleMode(provider: target.provider, accountKey: target.accountKey)
@@ -1202,7 +1301,7 @@ final class QuotaViewModel {
             return
         }
         defer { warmupRunningAccounts.remove(account) }
-        guard proxyManager.proxyStatus.running else {
+        guard isManagementAPIAvailable else {
             // Warmup skipped when proxy is not running; no log.
             return
         }
@@ -1516,7 +1615,7 @@ final class QuotaViewModel {
     /// Attempt to recover an unresponsive proxy
     private func attemptProxyRecovery() async {
         // Check if process is still running
-        if proxyManager.proxyStatus.running {
+        if modeManager.isLocalProxyMode && proxyManager.proxyStatus.running {
             // Proxy process is running but not responding - likely hung
             // Stop and restart
             refreshTask?.cancel()
@@ -1564,6 +1663,9 @@ final class QuotaViewModel {
             
             // Clear any previous error on success
             errorMessage = nil
+            if modeManager.isRemoteProxyMode && !modeManager.connectionStatus.isConnected {
+                modeManager.markConnected()
+            }
             
             checkAccountStatusChanges()
             
@@ -1585,6 +1687,9 @@ final class QuotaViewModel {
         } catch {
             if !Task.isCancelled {
                 errorMessage = error.localizedDescription
+                if modeManager.isRemoteProxyMode {
+                    modeManager.setConnectionStatus(.error(error.localizedDescription))
+                }
             }
         }
     }
@@ -1592,6 +1697,9 @@ final class QuotaViewModel {
     func manualRefresh() async {
         if modeManager.isMonitorMode {
             await refreshQuotasDirectly(force: true)
+        } else if modeManager.isRemoteProxyMode {
+            await refreshData(refreshQuotas: false)
+            await refreshAllQuotas()
         } else if proxyManager.proxyStatus.running {
             await refreshData(refreshQuotas: false)
             await refreshAllQuotas()
@@ -1612,21 +1720,27 @@ final class QuotaViewModel {
         lastQuotaRefresh = Date()
         lastQuotaRefreshTime = Date()
 
-        // Note: Cursor and Trae removed from auto-refresh (issue #29)
-        // User must use "Scan for IDEs" to detect these
-        async let antigravity: () = refreshAntigravityQuotasInternal()
-        async let openai: () = refreshOpenAIQuotasInternal()
-        async let copilot: () = refreshCopilotQuotasInternal()
-        async let claudeCode: () = refreshClaudeCodeQuotasInternal()
-        async let glm: () = refreshGlmQuotasInternal()
-        async let warp: () = refreshWarpQuotasInternal()
-        async let kiro: () = refreshKiroQuotasInternal()
-        async let clinePass: () = refreshClinePassQuotasInternal()
+        // In remote mode, quotas come from the remote proxy's credentials via /api-call;
+        // local filesystem fetchers would show this Mac's accounts instead.
+        if modeManager.isRemoteProxyMode {
+            await refreshRemoteQuotasInternal()
+        } else {
+            // Note: Cursor and Trae removed from auto-refresh (issue #29)
+            // User must use "Scan for IDEs" to detect these
+            async let antigravity: () = refreshAntigravityQuotasInternal()
+            async let openai: () = refreshOpenAIQuotasInternal()
+            async let copilot: () = refreshCopilotQuotasInternal()
+            async let claudeCode: () = refreshClaudeCodeQuotasInternal()
+            async let glm: () = refreshGlmQuotasInternal()
+            async let warp: () = refreshWarpQuotasInternal()
+            async let kiro: () = refreshKiroQuotasInternal()
+            async let clinePass: () = refreshClinePassQuotasInternal()
 
-        _ = await (antigravity, openai, copilot, claudeCode, glm, warp, kiro, clinePass)
+            _ = await (antigravity, openai, copilot, claudeCode, glm, warp, kiro, clinePass)
 
-        // Refresh (not re-import) already-imported Cursor/Trae accounts (#163).
-        await refreshImportedIDEQuotas()
+            // Refresh (not re-import) already-imported Cursor/Trae accounts (#163).
+            await refreshImportedIDEQuotas()
+        }
 
         checkQuotaNotifications()
         pruneMenuBarItems()
@@ -1638,12 +1752,18 @@ final class QuotaViewModel {
     /// Unified quota refresh - works in both Full Mode and Quota-Only Mode
     /// In Full Mode: uses direct fetchers (works without proxy)
     /// In Quota-Only Mode: uses direct fetchers + CLI fetchers
+    /// In Remote Mode: fetches the remote proxy's credentials via /api-call
     /// Note: Cursor and Trae require explicit user scan (issue #29)
     func refreshQuotasUnified() async {
         if modeManager.isMonitorMode {
             await refreshQuotasDirectly()
             return
         }
+        if modeManager.isRemoteProxyMode {
+            await refreshAllQuotas()
+            return
+        }
+
         let providers: Set<AIProvider> = [
             .antigravity, .codex, .copilot, .claude, .glm, .warp, .kiro, .clinePass,
         ]
@@ -1741,6 +1861,20 @@ final class QuotaViewModel {
         antigravitySwitcher.dismissResult()
     }
     
+    /// Replaces quotas for remote-supported providers with what the remote proxy's
+    /// credentials report. Accounts whose fetch failed keep their previous value.
+    private func refreshRemoteQuotasInternal(providers: Set<AIProvider> = RemoteQuotaFetcher.supportedProviders) async {
+        guard let client = apiClient else { return }
+        let files = authFiles.filter { $0.providerType.map(providers.contains) ?? false }
+        let fetched = await RemoteQuotaFetcher.fetchAll(files: files, client: client)
+        for provider in providers {
+            let liveKeys = Set(files.filter { $0.providerType == provider && !$0.disabled }.map(\.quotaLookupKey))
+            var quotas = (providerQuotas[provider] ?? [:]).filter { liveKeys.contains($0.key) }
+            quotas.merge(fetched[provider] ?? [:]) { _, fresh in fresh }
+            providerQuotas[provider] = quotas.isEmpty ? nil : quotas
+        }
+    }
+
     private func refreshOpenAIQuotasInternal() async {
         let quotas = await openAIFetcher.fetchAllCodexQuotas()
         providerQuotas[.codex] = quotas
@@ -1765,6 +1899,12 @@ final class QuotaViewModel {
     func refreshQuota(for provider: AIProvider) async {
         guard beginScopedRefresh(provider: provider) else { return }
         defer { endScopedRefresh(provider: provider) }
+
+        if modeManager.isRemoteProxyMode {
+            await refreshRemoteQuotasInternal(providers: [provider])
+            await finishScopedRefresh(provider: provider)
+            return
+        }
 
         if modeManager.isMonitorMode {
             await refreshMonitorProvider(provider)
@@ -1817,6 +1957,18 @@ final class QuotaViewModel {
     func refreshQuota(for account: QuotaAccountID) async {
         guard beginScopedRefresh(provider: account.provider, account: account) else { return }
         defer { endScopedRefresh(provider: account.provider, account: account) }
+
+        if modeManager.isRemoteProxyMode {
+            guard let client = apiClient,
+                  let file = authFiles.first(where: {
+                      $0.providerType == account.provider && $0.quotaLookupKey == account.accountKey
+                  }) else { return }
+            if let quota = await RemoteQuotaFetcher.fetch(file: file, client: client) {
+                providerQuotas[account.provider, default: [:]][account.accountKey] = quota
+            }
+            await finishScopedRefresh(provider: account.provider)
+            return
+        }
 
         let quota: ProviderQuotaData?
         var subscription: SubscriptionInfo?
@@ -2548,7 +2700,7 @@ final class QuotaViewModel {
         }
         
         // Add items from direct auth files (quota-only mode)
-        for file in directAuthFiles {
+        for file in directAuthFiles where !modeManager.isRemoteProxyMode {
             let item = MenuBarQuotaItem(provider: file.provider.rawValue, accountKey: file.menuBarAccountKey)
             if !seen.contains(item.id) {
                 seen.insert(item.id)
@@ -2577,30 +2729,32 @@ final class QuotaViewModel {
             }
         }
 
-        for file in directAuthFiles where file.provider == .codex {
-            let filenameWithoutExtension = file.filename.hasSuffix(".json")
-                ? String(file.filename.dropLast(".json".count))
-                : file.filename
-            addAliases(
-                provider: .codex,
-                canonicalKey: file.filename.codexFilenameKey,
-                aliases: [file.filename, filenameWithoutExtension, file.email]
-            )
-        }
-        for file in directAuthFiles where file.provider == .copilot {
-            let filenameWithoutExtension = file.filename.hasSuffix(".json")
-                ? String(file.filename.dropLast(".json".count))
-                : file.filename
-            addAliases(
-                provider: .copilot,
-                canonicalKey: file.menuBarAccountKey,
-                aliases: [
-                    file.filename,
-                    filenameWithoutExtension,
-                    file.filename.copilotFilenameKey,
-                    file.email,
-                ] + file.legacyIdentityKeys.map { $0 as String? }
-            )
+        if !modeManager.isRemoteProxyMode {
+            for file in directAuthFiles where file.provider == .codex {
+                let filenameWithoutExtension = file.filename.hasSuffix(".json")
+                    ? String(file.filename.dropLast(".json".count))
+                    : file.filename
+                addAliases(
+                    provider: .codex,
+                    canonicalKey: file.filename.codexFilenameKey,
+                    aliases: [file.filename, filenameWithoutExtension, file.email]
+                )
+            }
+            for file in directAuthFiles where file.provider == .copilot {
+                let filenameWithoutExtension = file.filename.hasSuffix(".json")
+                    ? String(file.filename.dropLast(".json".count))
+                    : file.filename
+                addAliases(
+                    provider: .copilot,
+                    canonicalKey: file.menuBarAccountKey,
+                    aliases: [
+                        file.filename,
+                        filenameWithoutExtension,
+                        file.filename.copilotFilenameKey,
+                        file.email,
+                    ] + file.legacyIdentityKeys.map { $0 as String? }
+                )
+            }
         }
 
         for file in authFiles where file.providerType == .codex {

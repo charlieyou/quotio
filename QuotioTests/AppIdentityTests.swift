@@ -2,8 +2,16 @@ import XCTest
 @testable import Quotio
 
 final class AppIdentityTests: XCTestCase {
-    func testProductionBundleIdentifierUsesByTrongDomain() {
+    func testProductionIdentityUsesByTrongDomain() {
         XCTAssertEqual(AppIdentity.productionBundleIdentifier, "app.bytrong.quotio")
+        XCTAssertEqual(
+            AppIdentity.keychainService(suffix: "remote-management"),
+            "app.bytrong.quotio.remote-management"
+        )
+        XCTAssertEqual(
+            AppIdentity.legacyKeychainServices(suffix: "remote-management").first,
+            "dev.quotio.desktop.remote-management"
+        )
     }
 
     func testLegacyDefaultsMergePreservesCurrentValuesAndNewestLegacyDomain() {

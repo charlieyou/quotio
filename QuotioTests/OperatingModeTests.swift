@@ -3,21 +3,37 @@ import XCTest
 
 @MainActor
 final class OperatingModeTests: XCTestCase {
-    func testRemoteModeIsNoLongerAvailable() {
-        XCTAssertNil(OperatingMode(rawValue: "remote"))
+    func testRemoteModeRawValueRoundTrips() {
+        XCTAssertEqual(OperatingMode(rawValue: "remote"), .remoteProxy)
     }
 
-    func testLegacyRemoteModeMigratesToMonitor() {
+    func testLegacyRemoteModeMigratesToRemoteProxy() {
         XCTAssertEqual(
-            OperatingMode.fromLegacy(appModeRaw: "full", connectionModeRaw: "remote"),
-            .monitor
+            OperatingMode.fromLegacy(appModeRaw: "full", connectionMode: .remote),
+            .remoteProxy
         )
     }
 
     func testLegacyLocalModeMigratesToLocalProxy() {
         XCTAssertEqual(
-            OperatingMode.fromLegacy(appModeRaw: "full", connectionModeRaw: "local"),
+            OperatingMode.fromLegacy(appModeRaw: "full", connectionMode: .local),
             .localProxy
         )
+    }
+
+    func testRemoteManagementURLAcceptsBareServerURL() {
+        let cases = [
+            "https://cyou-cliproxyapi.fly.dev",
+            "https://cyou-cliproxyapi.fly.dev/",
+            " https://cyou-cliproxyapi.fly.dev/v0 ",
+            "https://cyou-cliproxyapi.fly.dev/v0/management/",
+        ]
+        for input in cases {
+            XCTAssertEqual(
+                RemoteConnectionConfig(endpointURL: input).managementBaseURL,
+                "https://cyou-cliproxyapi.fly.dev/v0/management",
+                input
+            )
+        }
     }
 }

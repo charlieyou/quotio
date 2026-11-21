@@ -112,8 +112,14 @@ final class StatusBarMenuBuilder {
         var providers = Set<AIProvider>()
         
         // From direct auth files (scanned from filesystem - available immediately)
-        for file in viewModel.directAuthFiles {
-            providers.insert(file.provider)
+        if modeManager.isRemoteProxyMode {
+            for file in viewModel.authFiles {
+                if let provider = file.providerType { providers.insert(provider) }
+            }
+        } else {
+            for file in viewModel.directAuthFiles {
+                providers.insert(file.provider)
+            }
         }
         
         // From quota data (available after API calls complete)
@@ -129,7 +135,8 @@ final class StatusBarMenuBuilder {
         
         return Self.filterProviders(
             providers,
-            isMonitorMode: modeManager.isMonitorMode,
+            // Remote accounts are used through the remote proxy, not a local CLI.
+            isMonitorMode: modeManager.isMonitorMode || modeManager.isRemoteProxyMode,
             isCLIInstalled: isCLIInstalled
         )
     }

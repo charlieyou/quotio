@@ -94,7 +94,7 @@ actor ClaudeCodeQuotaFetcher {
     }
 
     /// Parse a quota usage object from JSON
-    private func parseQuotaUsage(from json: [String: Any]?) -> ClaudeCodeQuotaInfo.QuotaUsage? {
+    nonisolated static func parseQuotaUsage(from json: [String: Any]?) -> ClaudeCodeQuotaInfo.QuotaUsage? {
         guard let json = json else { return nil }
         
         // Handle both Int and Double for utilization
@@ -114,7 +114,7 @@ actor ClaudeCodeQuotaFetcher {
     }
     
     /// Parse extra usage object from JSON
-    private func parseExtraUsage(from json: [String: Any]?) -> ClaudeCodeQuotaInfo.ExtraUsage? {
+    nonisolated static func parseExtraUsage(from json: [String: Any]?) -> ClaudeCodeQuotaInfo.ExtraUsage? {
         guard let json = json else { return nil }
         
         let isEnabled = json["is_enabled"] as? Bool ?? false
@@ -292,11 +292,11 @@ actor ClaudeCodeQuotaFetcher {
             }
 
             // API returns data directly (no wrapper)
-            let fiveHour = parseQuotaUsage(from: json["five_hour"] as? [String: Any])
-            let sevenDay = parseQuotaUsage(from: json["seven_day"] as? [String: Any])
-            let sevenDaySonnet = parseQuotaUsage(from: json["seven_day_sonnet"] as? [String: Any])
-            let sevenDayOpus = parseQuotaUsage(from: json["seven_day_opus"] as? [String: Any])
-            let extraUsage = parseExtraUsage(from: json["extra_usage"] as? [String: Any])
+            let fiveHour = Self.parseQuotaUsage(from: json["five_hour"] as? [String: Any])
+            let sevenDay = Self.parseQuotaUsage(from: json["seven_day"] as? [String: Any])
+            let sevenDaySonnet = Self.parseQuotaUsage(from: json["seven_day_sonnet"] as? [String: Any])
+            let sevenDayOpus = Self.parseQuotaUsage(from: json["seven_day_opus"] as? [String: Any])
+            let extraUsage = Self.parseExtraUsage(from: json["extra_usage"] as? [String: Any])
 
             return .success(ClaudeCodeQuotaInfo(
                 accessToken: accessToken,
@@ -413,7 +413,7 @@ actor ClaudeCodeQuotaFetcher {
         }
         guard let credential = ClaudeDesktopCredentialReader.load() else { return nil }
         let response = await fetchUsageFromAPI(accessToken: credential.accessToken, email: key)
-        guard case .success(let info) = response, let quota = quotaData(from: info) else { return nil }
+        guard case .success(let info) = response, let quota = Self.quotaData(from: info) else { return nil }
         quotaCache[key] = CachedQuota(data: quota, timestamp: Date())
         return (key, quota)
     }
@@ -459,7 +459,7 @@ actor ClaudeCodeQuotaFetcher {
                 )
                 response = await fetchUsageFromAPI(accessToken: accessToken, email: email)
             }
-            guard case .success(let info) = response, let quota = quotaData(from: info) else { return [:] }
+            guard case .success(let info) = response, let quota = Self.quotaData(from: info) else { return [:] }
             quotaCache[email] = CachedQuota(data: quota, timestamp: Date())
             return [email: quota]
         } catch {
@@ -529,7 +529,7 @@ actor ClaudeCodeQuotaFetcher {
                     try await MonitorCredentialVault.shared.save(credential, metadata: account)
                     response = await fetchUsageFromAPI(accessToken: credential.accessToken, email: account.accountKey)
                 }
-                if case .success(let info) = response, let data = quotaData(from: info) {
+                if case .success(let info) = response, let data = Self.quotaData(from: info) {
                     quotaCache[account.accountKey] = CachedQuota(data: data, timestamp: Date())
                     return data
                 }
@@ -539,7 +539,7 @@ actor ClaudeCodeQuotaFetcher {
         return nil
     }
 
-    private func quotaData(from info: ClaudeCodeQuotaInfo) -> ProviderQuotaData? {
+    nonisolated static func quotaData(from info: ClaudeCodeQuotaInfo) -> ProviderQuotaData? {
         var models: [ModelQuota] = []
         if let value = info.fiveHour {
             models.append(ModelQuota(name: "five-hour-session", percentage: value.remaining, resetTime: value.resetsAt))
@@ -625,7 +625,7 @@ actor ClaudeCodeQuotaFetcher {
 
         switch result {
         case .success(let info):
-            guard let quotaData = quotaData(from: info) else { return nil }
+            guard let quotaData = Self.quotaData(from: info) else { return nil }
 
             // Update cache
             quotaCache[email] = CachedQuota(data: quotaData, timestamp: Date())

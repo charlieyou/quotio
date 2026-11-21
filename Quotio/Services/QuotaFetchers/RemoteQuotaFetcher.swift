@@ -125,10 +125,66 @@ nonisolated enum RemoteQuotaFetcher {
         }
     }
 
-    static func fetch(file: AuthFile, client: ManagementAPIClient) async -> ProviderQuotaData? {
+    /// Claude limits from the `Anthropic-Ratelimit-Unified-*` headers the proxy recorded on the
+    /// account's own inference traffic. Anthropic rate-limits `/api/oauth/usage` aggressively,
+    /// so this is preferred over an extra upstream call.
+    static func observedClaudeQuota(for file: AuthFile, maxAge: TimeInterval, now: Date = Date()) -> ProviderQuotaData? {
+        guard file.providerType == .claude,
+              let observation = file.quota,
+              let signals = observation.signals,
+              let observedAt = observation.observedAt.flatMap(parseDate),
+              now.timeIntervalSince(observedAt) <= maxAge else { return nil }
+
+        func window(_ name: String, _ prefix: String) -> ModelQuota? {
+            guard let used = signals["Anthropic-Ratelimit-Unified-\(prefix)-Utilization"].flatMap(Double.init) else { return nil }
+            let reset = signals["Anthropic-Ratelimit-Unified-\(prefix)-Reset"]
+                .flatMap(TimeInterval.init)
+                .map { ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: $0)) } ?? ""
+            return ModelQuota(name: name, percentage: max(0, min(100, 100 - used * 100)), resetTime: reset)
+        }
+
+        let models = [window("five-hour-session", "5h"), window("seven-day-weekly", "7d")].compactMap { $0 }
+        guard !models.isEmpty else { return nil }
+        let rejected = signals["Anthropic-Ratelimit-Unified-Status"] == "rejected"
+        return ProviderQuotaData(models: models, lastUpdated: observedAt, isForbidden: rejected)
+    }
+
+    private static func parseDate(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    }
+
+    /// Observations older than this fall back to an active usage request.
+    static let observationMaxAge: TimeInterval = 6 * 60 * 60
+
+    /// Minimum gap between active Claude usage requests for one credential, and the backoff
+    /// after a 429 when the upstream sends no Retry-After.
+    static let claudeUsageMinInterval: TimeInterval = 15 * 60
+
+    /// Next time an active Claude usage request is allowed, per auth_index.
+    private static let claudeBackoff = ClaudeUsageBackoff()
+
+    static func fetch(file: AuthFile, client: ManagementAPIClient, force: Bool = false) async -> ProviderQuotaData? {
+        if var observed = observedClaudeQuota(for: file, maxAge: observationMaxAge) {
+            observed.accountDisplayName = file.email
+            return observed
+        }
+        let isClaude = file.providerType == .claude
+        let backoffKey = file.authIndex ?? file.name
+        if isClaude, !force, !claudeBackoff.allows(backoffKey) {
+            return nil
+        }
         for request in requests(for: file) {
             do {
                 let response = try await client.apiCall(request)
+                if isClaude {
+                    claudeBackoff.record(backoffKey, response: response, minInterval: claudeUsageMinInterval)
+                    if response.statusCode == 429 {
+                        Log.quota("Claude usage endpoint rate-limited; keeping previous quota")
+                        return nil
+                    }
+                }
                 if var quota = quota(for: file, request: request, response: response) {
                     quota.accountDisplayName = quota.accountDisplayName ?? file.email
                     return quota
@@ -145,5 +201,27 @@ nonisolated enum RemoteQuotaFetcher {
               let data = try? JSONSerialization.data(withJSONObject: ["project": projectId]),
               let body = String(data: data, encoding: .utf8) else { return "{}" }
         return body
+    }
+}
+
+/// Tracks when the next active Claude usage request is allowed per credential.
+nonisolated final class ClaudeUsageBackoff: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextAllowed: [String: Date] = [:]
+
+    func allows(_ key: String, now: Date = Date()) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return (nextAllowed[key] ?? .distantPast) <= now
+    }
+
+    func record(_ key: String, response: APICallResponse, minInterval: TimeInterval, now: Date = Date()) {
+        var wait = minInterval
+        if response.statusCode == 429,
+           let retryAfter = response.header?.first(where: { $0.key.caseInsensitiveCompare("Retry-After") == .orderedSame })?
+               .value.first.flatMap(TimeInterval.init) {
+            wait = max(wait, retryAfter)
+        }
+        lock.lock(); defer { lock.unlock() }
+        nextAllowed[key] = now.addingTimeInterval(wait)
     }
 }

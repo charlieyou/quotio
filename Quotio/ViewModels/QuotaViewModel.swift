@@ -1963,7 +1963,8 @@ final class QuotaViewModel {
                   let file = authFiles.first(where: {
                       $0.providerType == account.provider && $0.quotaLookupKey == account.accountKey
                   }) else { return }
-            if let quota = await RemoteQuotaFetcher.fetch(file: file, client: client) {
+            // An explicit per-account refresh may bypass the Claude usage cooldown.
+            if let quota = await RemoteQuotaFetcher.fetch(file: file, client: client, force: true) {
                 providerQuotas[account.provider, default: [:]][account.accountKey] = quota
             }
             await finishScopedRefresh(provider: account.provider)

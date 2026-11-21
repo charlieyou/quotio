@@ -373,6 +373,18 @@ nonisolated struct AuthFile: Codable, Identifiable, Hashable, Sendable {
     let updatedAt: String?
     let lastRefresh: String?
     var projectId: String? = nil
+    /// Rate-limit headers the proxy observed on this credential's real traffic.
+    var quota: QuotaObservation? = nil
+
+    nonisolated struct QuotaObservation: Codable, Hashable, Sendable {
+        let observedAt: String?
+        let signals: [String: String]?
+
+        enum CodingKeys: String, CodingKey {
+            case observedAt = "observed_at"
+            case signals
+        }
+    }
     /// Codex ID-token claims the proxy decodes for remote clients.
     var idToken: CodexIDTokenClaims? = nil
 
@@ -403,6 +415,7 @@ nonisolated struct AuthFile: Codable, Identifiable, Hashable, Sendable {
         case id, name, provider, label, status, disabled, unavailable, source, path, email, account
         case authIndex = "auth_index"
         case projectId = "project_id"
+        case quota
         case idToken = "id_token"
         case statusMessage = "status_message"
         case runtimeOnly = "runtime_only"

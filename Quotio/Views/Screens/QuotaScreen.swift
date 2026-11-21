@@ -486,7 +486,6 @@ private struct AccountQuotaCardV2: View {
     let account: AccountInfo
     let isLoading: Bool
     
-    @State private var showSwitchSheet = false
     @State private var showModelsDetailSheet = false
 
     private var accountID: QuotaAccountID {
@@ -682,27 +681,6 @@ private struct AccountQuotaCardV2: View {
                         .clipShape(Capsule())
                 }
                 
-                if provider == .antigravity && !isActiveInIDE {
-                    Button {
-                        showSwitchSheet = true
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.right.square")
-                                .font(.caption)
-                            Text("Use in IDE")
-                                .font(.caption)
-                                .fontWeight(.medium)
-                        }
-                            .foregroundStyle(.blue)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .background(Color.blue.opacity(0.1))
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .help("antigravity.useInIDE".localized())
-                }
-                
                 Button {
                     Task {
                         await viewModel.refreshQuota(for: accountID)
@@ -789,15 +767,6 @@ private struct AccountQuotaCardV2: View {
                     }
                 }
             }
-        }
-        .sheet(isPresented: $showSwitchSheet) {
-            SwitchAccountSheet(
-                accountEmail: account.email,
-                onDismiss: {
-                    showSwitchSheet = false
-                }
-            )
-            .environment(viewModel)
         }
         .sheet(isPresented: $showWarmupSheet) {
             WarmupSheet(

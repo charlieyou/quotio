@@ -324,10 +324,7 @@ final class StatusBarMenuBuilder {
             data: data,
             provider: provider,
             subscriptionInfo: subscriptionInfo,
-            isActiveInIDE: isActiveInIDE,
-            onUseAccount: provider == .antigravity && !isActiveInIDE ? { [weak viewModel] in
-                Self.showSwitchConfirmation(email: email, viewModel: viewModel)
-            } : nil
+            isActiveInIDE: isActiveInIDE
         )
 
         let item = viewItem(for: cardView)
@@ -359,35 +356,6 @@ final class StatusBarMenuBuilder {
         return submenu
     }
 
-    // MARK: - Switch Account Confirmation
-    
-    private static func showSwitchConfirmation(email: String, viewModel: QuotaViewModel?) {
-        guard let viewModel = viewModel else { return }
-        
-        let isIDERunning = viewModel.antigravitySwitcher.isIDERunning()
-        
-        let alert = NSAlert()
-        alert.messageText = "antigravity.switch.dialog.title".localized()
-        alert.informativeText = String(format: "antigravity.switch.dialog.message".localized(), email)
-        
-        if isIDERunning {
-            alert.informativeText += "\n\n⚠️ " + "antigravity.switch.dialog.warning".localized()
-        }
-        
-        alert.alertStyle = isIDERunning ? .warning : .informational
-        alert.addButton(withTitle: "antigravity.switch.title".localized())
-        alert.addButton(withTitle: "action.cancel".localized())
-        
-        let response = alert.runModal()
-        
-        if response == .alertFirstButtonReturn {
-            Task { @MainActor in
-                await viewModel.switchAntigravityAccount(email: email)
-                StatusBarManager.shared.rebuildMenuInPlace()
-            }
-        }
-    }
-    
     // MARK: - Empty State
     
     private func buildEmptyStateItem() -> NSMenuItem {
@@ -828,12 +796,9 @@ private struct MenuAccountCardView: View {
     let provider: AIProvider
     let subscriptionInfo: SubscriptionInfo?
     let isActiveInIDE: Bool
-    let onUseAccount: (() -> Void)?
     
     private var settings: MenuBarSettingsManager { MenuBarSettingsManager.shared }
     @State private var isHovered = false
-    @State private var isUseHovered = false
-    @State private var isUsingAccount = false
 
     private var accountID: QuotaAccountID {
         QuotaAccountID(provider: provider, accountKey: accountKey)
@@ -1064,7 +1029,7 @@ private struct MenuAccountCardView: View {
                     .clipShape(Capsule())
             }
             
-            // Active/Use Badge
+            // Active Badge
             if isActiveInIDE {
                 Text("antigravity.active".localized())
                     .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -1077,36 +1042,6 @@ private struct MenuAccountCardView: View {
                             .strokeBorder(Color.green.opacity(0.25), lineWidth: 1)
                     )
                     .clipShape(Capsule())
-            } else if let onUse = onUseAccount {
-                Button {
-                    isUsingAccount = true
-                    Task { @MainActor in
-                        onUse()
-                        try? await Task.sleep(nanoseconds: 650_000_000)
-                        isUsingAccount = false
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        if isUsingAccount {
-                            ProgressView()
-                                .controlSize(.mini)
-                        }
-                        Text("antigravity.useInIDE".localized() + " " + "→".localized())
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(isUseHovered ? Color.secondary.opacity(0.12) : Color.secondary.opacity(0.06))
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(Color.secondary.opacity(isUseHovered ? 0.45 : 0.25), lineWidth: 1)
-                    )
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(isUsingAccount)
-                .onHover { isUseHovered = $0 }
             }
         }
     }

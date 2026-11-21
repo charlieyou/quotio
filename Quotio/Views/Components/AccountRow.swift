@@ -270,27 +270,6 @@ struct AccountRow: View {
                     .clipShape(Capsule())
             }
             
-            // Switch button (Antigravity only, for proxy/direct accounts that are not active)
-            if account.provider == .antigravity && !isActiveInIDE && account.source != .autoDetected {
-                Button {
-                    onSwitch?()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "rectangle.portrait.and.arrow.right")
-                            .font(.caption2)
-                        Text("antigravity.useInIDE".localized())
-                            .font(.caption2)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.blue.opacity(0.1))
-                    .foregroundStyle(.blue)
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .help("antigravity.switch.title".localized())
-            }
-            
             // Disable/Enable toggle button (only for proxy accounts)
             if account.source.supportsDisable, let onToggleDisabled = onToggleDisabled {
                 Button {

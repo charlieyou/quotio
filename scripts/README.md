@@ -1,8 +1,9 @@
 # Scripts
 
-Quotio has two self-contained script entrypoints:
+Quotio has three self-contained script entrypoints:
 
 - `build_and_run.sh`: build Debug, stop any running Quotio process, and launch the fresh app. Optional flags: `--debug`, `--logs`, `--telemetry`, `--verify`.
+- `install_release.sh`: build Release, replace `/Applications/Quotio.app`, relaunch it, and add it as a login item if missing.
 - `build_dmg.sh`: build a Release archive, verify the bundled proxy, and create ZIP and DMG artifacts. Pass `--distribution` to require Developer ID signing, notarization, stapling, and Gatekeeper validation.
 
 `build_and_run.sh` respects the Xcode signing configuration. To sign local Debug builds with an Apple Development certificate, copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig` and set `DEVELOPMENT_TEAM` to your Apple team ID.

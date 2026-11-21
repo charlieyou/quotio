@@ -51,8 +51,8 @@ final class RemoteQuotaFetcherTests: XCTestCase {
         let file = try authFile(#"{"id":"x","auth_index":"33","name":"antigravity-a@example.com.json","provider":"antigravity","status":"active","disabled":false,"unavailable":false,"project_id":"proj-7"}"#)
         let requests = RemoteQuotaFetcher.requests(for: file)
         XCTAssertEqual(requests.map(\.url), [
-            AntigravityQuotaFetcher.quotaSummaryAPIURL,
-            AntigravityQuotaFetcher.quotaAPIURL,
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+            "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
         ])
         let body = try JSONSerialization.jsonObject(with: Data(try XCTUnwrap(requests[0].data).utf8)) as? [String: String]
         XCTAssertEqual(body, ["project": "proj-7"])
@@ -105,6 +105,32 @@ final class RemoteQuotaFetcherTests: XCTestCase {
         ))
         XCTAssertEqual(quota.models.map(\.name), ["gemini-3-pro"])
         XCTAssertEqual(quota.models.first?.percentage, 100)
+    }
+
+    func testAntigravitySummaryWithoutGeminiGroupGetsGeminiSessionFromModelList() async throws {
+        let file = try authFile(#"{"id":"x","auth_index":"33","name":"antigravity-a.json","provider":"antigravity","status":"active","disabled":false,"unavailable":false,"email":"a@example.com"}"#)
+        let summaryBody = #"""
+        {"groups":[{"displayName":"Claude and GPT models","buckets":[
+          {"bucketId":"3p-weekly","displayName":"Weekly Limit Remaining","window":"weekly","remainingFraction":0.75,"resetTime":"2026-11-28T16:53:16Z"},
+          {"bucketId":"3p-5h","displayName":"Five Hour Limit Remaining","window":"5h","remainingFraction":0.5,"resetTime":"2026-11-21T21:53:16Z"}]}]}
+        """#
+        let modelsBody = #"""
+        {"models":{"claude-opus-5-5-high":{"quotaInfo":{"remainingFraction":0.2,"resetTime":"c"}},
+                   "gemini-3-flash":{"quotaInfo":{"remainingFraction":0.9,"resetTime":"late"}},
+                   "gemini-2.5-pro":{"quotaInfo":{"remainingFraction":0.6,"resetTime":"2026-11-21T21:53:05Z"}}}}
+        """#
+        let fetched = await RemoteQuotaFetcher.fetch(file: file) { request in
+            let body = request.url.hasSuffix(":retrieveUserQuotaSummary") ? summaryBody : modelsBody
+            return APICallResponse(statusCode: 200, header: nil, body: body)
+        }
+        let merged = try XCTUnwrap(fetched)
+        XCTAssertEqual(merged.accountDisplayName, "a@example.com")
+        let byName = Dictionary(uniqueKeysWithValues: merged.models.map { ($0.name, $0) })
+        XCTAssertEqual(byName["antigravity-gemini-session"]?.percentage ?? -1, 60, accuracy: 0.001, "lowest Gemini model, not Claude")
+        XCTAssertEqual(byName["antigravity-gemini-session"]?.resetTime, "2026-11-21T21:53:05Z")
+        XCTAssertEqual(byName["antigravity-claude-gpt-session"]?.percentage ?? -1, 50, accuracy: 0.001)
+        XCTAssertEqual(byName["antigravity-claude-gpt-weekly"]?.percentage ?? -1, 75, accuracy: 0.001)
+        XCTAssertEqual(merged.models.count, 3)
     }
 
     func testUpstreamAuthFailureMarksAccountForbiddenAndServerErrorYieldsNothing() throws {

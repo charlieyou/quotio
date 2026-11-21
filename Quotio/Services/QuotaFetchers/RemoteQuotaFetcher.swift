@@ -13,6 +13,10 @@ import Foundation
 nonisolated enum RemoteQuotaFetcher {
     static let claudeUsageURL = "https://api.anthropic.com/api/oauth/usage"
     static let codexUsageURL = "https://chatgpt.com/backend-api/wham/usage"
+    /// The proxy serves Antigravity through agy, which uses Google's daily Cloud Code endpoint.
+    /// Only that endpoint counts the proxy's traffic; production reports the same account as unused.
+    static let antigravityQuotaSummaryURL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+    static let antigravityAvailableModelsURL = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
 
     static let supportedProviders: Set<AIProvider> = [.claude, .codex, .antigravity]
 
@@ -52,8 +56,8 @@ nonisolated enum RemoteQuotaFetcher {
             ]
             let body = antigravityBody(projectId: file.projectId)
             return [
-                APICallRequest(authIndex: authIndex, method: "POST", url: AntigravityQuotaFetcher.quotaSummaryAPIURL, header: header, data: body),
-                APICallRequest(authIndex: authIndex, method: "POST", url: AntigravityQuotaFetcher.quotaAPIURL, header: header, data: body),
+                APICallRequest(authIndex: authIndex, method: "POST", url: antigravityQuotaSummaryURL, header: header, data: body),
+                APICallRequest(authIndex: authIndex, method: "POST", url: antigravityAvailableModelsURL, header: header, data: body),
             ]
         default:
             return []
@@ -90,7 +94,7 @@ nonisolated enum RemoteQuotaFetcher {
                 identity: CodexQuotaIdentity(planType: file.idToken?.planType)
             )
         case .antigravity:
-            if request.url == AntigravityQuotaFetcher.quotaSummaryAPIURL {
+            if request.url == antigravityQuotaSummaryURL {
                 guard let models = AntigravityQuotaFetcher.parseQuotaSummaryModels(from: data),
                       !models.isEmpty else { return nil }
                 return ProviderQuotaData(models: models)
@@ -191,6 +195,14 @@ nonisolated enum RemoteQuotaFetcher {
     private static let claudeBackoff = ClaudeUsageBackoff()
 
     static func fetch(file: AuthFile, client: ManagementAPIClient, force: Bool = false) async -> ProviderQuotaData? {
+        await fetch(file: file, force: force) { try await client.apiCall($0) }
+    }
+
+    static func fetch(
+        file: AuthFile,
+        force: Bool = false,
+        apiCall: (APICallRequest) async throws -> APICallResponse
+    ) async -> ProviderQuotaData? {
         if var observed = observedClaudeQuota(for: file, maxAge: observationMaxAge) {
             observed.accountDisplayName = file.email
             return observed
@@ -200,9 +212,11 @@ nonisolated enum RemoteQuotaFetcher {
         if isClaude, !force, !claudeBackoff.allows(backoffKey) {
             return nil
         }
+        // An Antigravity summary without a Gemini group waits for the per-model list.
+        var summary: ProviderQuotaData?
         for request in requests(for: file) {
             do {
-                let response = try await client.apiCall(request)
+                let response = try await apiCall(request)
                 if isClaude {
                     claudeBackoff.record(backoffKey, response: response, minInterval: claudeUsageMinInterval)
                     if response.statusCode == 429 {
@@ -210,15 +224,35 @@ nonisolated enum RemoteQuotaFetcher {
                         return nil
                     }
                 }
-                if var quota = quota(for: file, request: request, response: response) {
-                    quota.accountDisplayName = quota.accountDisplayName ?? file.email
+                guard var quota = quota(for: file, request: request, response: response) else { continue }
+                if let summary {
+                    return addingAntigravityGeminiPool(to: summary, from: quota)
+                }
+                quota.accountDisplayName = quota.accountDisplayName ?? file.email
+                guard request.url == antigravityQuotaSummaryURL, !quota.isForbidden,
+                      !quota.models.contains(where: { $0.name.hasPrefix("antigravity-gemini-") }) else {
                     return quota
                 }
+                summary = quota
             } catch {
                 Log.quota("Remote quota request failed for \(file.providerType?.rawValue ?? file.provider): \(error.localizedDescription)")
             }
         }
-        return nil
+        return summary
+    }
+
+    /// Some tiers' quota summary has only the Claude/GPT group. Their Gemini models then share
+    /// one 5-hour pool that only the per-model list reports, so it becomes the Gemini session.
+    private static func addingAntigravityGeminiPool(to summary: ProviderQuotaData, from models: ProviderQuotaData) -> ProviderQuotaData {
+        guard let pool = models.models
+            .filter({ $0.name.contains("gemini") })
+            .min(by: { $0.percentage < $1.percentage }) else { return summary }
+        var merged = summary
+        merged.models.insert(
+            ModelQuota(name: "antigravity-gemini-session", percentage: pool.percentage, resetTime: pool.resetTime),
+            at: 0
+        )
+        return merged
     }
 
     private static func antigravityBody(projectId: String?) -> String {

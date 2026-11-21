@@ -489,8 +489,10 @@ private struct MenuHeaderView: View {
             Spacer()
             
             if isLoading {
+                // controlSize, not scaleEffect: a scaled spinner keeps its full layout
+                // height, which grows the header and shifts the whole menu while loading.
                 ProgressView()
-                    .scaleEffect(0.6)
+                    .controlSize(.small)
             }
         }
         .padding(.horizontal, 12)

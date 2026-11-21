@@ -770,3 +770,41 @@ final class MenuBarSettingsManager {
         min(max(value, minMenuBarItems), maxMenuBarItems)
     }
 }
+
+// MARK: - Menu Bar Weekly Summary
+
+/// The menu bar shows one item per provider: the average weekly remaining across
+/// every account, so many accounts stay readable.
+nonisolated enum MenuBarWeeklySummary {
+    static let providers: [AIProvider] = [.claude, .codex]
+
+    /// Weekly window names per provider. Model-scoped windows (e.g. Fable) are not the
+    /// account's overall weekly limit, so they are excluded from the average.
+    static let weeklyNames: [AIProvider: Set<String>] = [
+        .claude: ["seven-day-weekly"],
+        .codex: ["codex-weekly"],
+    ]
+
+    static func averageWeeklyRemaining(_ quotas: [String: ProviderQuotaData], provider: AIProvider) -> Double? {
+        guard let names = weeklyNames[provider] else { return nil }
+        let values = quotas.values.compactMap { data -> Double? in
+            guard !data.isForbidden else { return nil }
+            return data.models.first(where: { names.contains($0.name) && $0.percentage >= 0 })?.percentage
+        }
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    static func items(from providerQuotas: [AIProvider: [String: ProviderQuotaData]]) -> [MenuBarQuotaDisplayItem] {
+        providers.compactMap { provider in
+            guard let quotas = providerQuotas[provider], !quotas.isEmpty else { return nil }
+            return MenuBarQuotaDisplayItem(
+                id: "summary-" + provider.rawValue,
+                providerSymbol: provider.menuBarSymbol,
+                accountShort: provider.displayName,
+                percentage: averageWeeklyRemaining(quotas, provider: provider) ?? -1,
+                provider: provider
+            )
+        }
+    }
+}

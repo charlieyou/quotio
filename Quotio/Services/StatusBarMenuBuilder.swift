@@ -20,7 +20,7 @@ final class StatusBarMenuBuilder {
     
     private let viewModel: QuotaViewModel
     private let modeManager = OperatingModeManager.shared
-    private let menuWidth: CGFloat = 360
+    private let menuWidth: CGFloat = 460
     private let agentDetectionService = AgentDetectionService()
     
     // Cached agent statuses for filtering
@@ -247,12 +247,30 @@ final class StatusBarMenuBuilder {
         provider: AIProvider,
         isActiveInIDE: (String) -> Bool
     ) -> [(accountKey: String, email: String, data: ProviderQuotaData)] {
+        // Soonest shared reset first; accounts without a known reset go last.
         let sorted = quotas
             .map { (accountKey: $0.key, email: $0.value.accountDisplayName ?? $0.key, data: $0.value) }
-            .sorted { $0.email < $1.email }
+            .map { (row: $0, reset: sharedResetDate(of: $0.data) ?? .distantFuture) }
+            .sorted { ($0.reset, $0.row.email) < ($1.reset, $1.row.email) }
+            .map(\.row)
 
         guard provider == .antigravity else { return sorted }
         return AccountSorting.prioritizingActive(sorted) { isActiveInIDE($0.email) }
+    }
+
+    /// The future reset most of an account's quotas share (e.g. weekly and Fable), to the minute.
+    /// Without a majority the latest reset wins, so the weekly window beats the 5h session.
+    nonisolated static func sharedResetDate(of data: ProviderQuotaData, now: Date = Date()) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let standard = ISO8601DateFormatter()
+        let resets = data.models
+            .filter { !$0.isStandaloneMetric }
+            .compactMap { fractional.date(from: $0.resetTime) ?? standard.date(from: $0.resetTime) }
+            .filter { $0 > now }
+            .map { Date(timeIntervalSince1970: ($0.timeIntervalSince1970 / 60).rounded(.down) * 60) }
+        let counts = Dictionary(resets.map { ($0, 1) }, uniquingKeysWith: +)
+        return resets.max { (counts[$0, default: 0], $0) < (counts[$1, default: 0], $1) }
     }
 
     // MARK: - Header Item
@@ -316,21 +334,12 @@ final class StatusBarMenuBuilder {
 
         let isAntigravitySummary = provider == .antigravity && data.models.contains { $0.name.hasPrefix("antigravity-") }
 
-        if provider == .codex, let analytics = data.analytics, !analytics.isEmpty {
-            let submenu = buildCodexAnalyticsSubmenu(analytics: analytics)
-            item.submenu = submenu
-        } else if provider == .antigravity && !data.models.isEmpty && !isAntigravitySummary {
+        if provider == .antigravity && !data.models.isEmpty && !isAntigravitySummary {
             let submenu = buildAntigravitySubmenu(data: data)
             item.submenu = submenu
         }
 
         return item
-    }
-
-    private func buildCodexAnalyticsSubmenu(analytics: QuotaAnalytics) -> NSMenu {
-        let submenu = makeMenu()
-        submenu.addItem(viewItem(for: AnalyticsDetailSection(analytics: analytics), width: 640))
-        return submenu
     }
 
     // MARK: - Antigravity Submenu
@@ -810,6 +819,7 @@ private struct MenuNetworkInfoView: View {
 
 private struct MenuAccountCardView: View {
     @Environment(QuotaViewModel.self) private var viewModel
+    @Environment(\.colorScheme) private var colorScheme
     let accountKey: String
     let email: String
     let data: ProviderQuotaData
@@ -972,20 +982,23 @@ private struct MenuAccountCardView: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
             headerSection
-            
+
             quotaContentSection
-            
-            footerSection
         }
-        .padding(12)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isHovered ? Color.secondary.opacity(0.08) : Color.secondary.opacity(0.04))
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.black.opacity(colorScheme == .dark ? (isHovered ? 0.32 : 0.24) : (isHovered ? 0.07 : 0.04)))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.1), lineWidth: 1)
         )
         .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
         .onHover { isHovered = $0 }
     }
     
@@ -994,17 +1007,28 @@ private struct MenuAccountCardView: View {
     private var headerSection: some View {
         HStack(alignment: .center, spacing: 8) {
             // Provider Icon
-            ProviderIconMono(provider: provider, size: 16)
+            ProviderIconMono(provider: provider, size: 12)
                 .foregroundStyle(.secondary)
                 .opacity(0.8)
             
             // Email
             Text(displayEmail)
-                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .font(.system(size: 12.5, weight: .semibold, design: .rounded))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
             
             Spacer()
+
+            if let sharedResetTime {
+                HStack(spacing: 3) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(sharedResetTime)
+                        .font(.system(size: 11.5, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                }
+                .foregroundStyle(.primary.opacity(0.75))
+            }
 
             Button {
                 Task { await viewModel.refreshQuota(for: accountID) }
@@ -1012,12 +1036,12 @@ private struct MenuAccountCardView: View {
                 if viewModel.isRefreshing(account: accountID) {
                     ProgressView()
                         .controlSize(.mini)
-                        .frame(width: 20, height: 20)
+                        .frame(width: 16, height: 16)
                 } else {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 20, height: 20)
+                        .frame(width: 16, height: 16)
                 }
             }
             .buttonStyle(.plain)
@@ -1030,10 +1054,10 @@ private struct MenuAccountCardView: View {
             // Tier Badge
             if let config = tierConfig {
                 Text(config.name)
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
                     .foregroundStyle(config.textColor)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
                     .background(config.bgColor)
                     .clipShape(Capsule())
             }
@@ -1145,6 +1169,19 @@ private struct MenuAccountCardView: View {
         }
     }
 
+    /// The reset most of this account's quotas share (e.g. weekly and Fable); shown once in
+    /// the header, while a quota with a different reset (e.g. the 5h session) keeps its own.
+    private var sharedResetDate: Date? {
+        guard settings.quotaDisplayStyle == .card else { return nil }
+        return StatusBarMenuBuilder.sharedResetDate(of: data)
+    }
+
+    private var sharedResetTime: String? {
+        guard let date = sharedResetDate else { return nil }
+        let iso = ISO8601DateFormatter().string(from: date)
+        return ModelBadgeData(name: "", percentage: 0, resetTime: iso).formattedResetTime
+    }
+
     @ViewBuilder
     private func quotaLayout(models: [ModelBadgeData]) -> some View {
         switch settings.quotaDisplayStyle {
@@ -1153,21 +1190,7 @@ private struct MenuAccountCardView: View {
         case .ring:
             RingGridLayout(models: models)
         case .card:
-            CardGridLayout(models: models)
-        }
-    }
-    
-    // MARK: - Footer
-
-    private var footerSection: some View {
-        HStack(spacing: 12) {
-            // Reset info is now shown inside each metric, so only show last update here
-            Spacer()
-
-            // Last Update
-            Text(data.lastUpdated.formatted(.relative(presentation: .named)))
-                .font(.system(size: 10, design: .rounded))
-                .foregroundStyle(.secondary)
+            CardGridLayout(models: models, sharedResetDate: sharedResetDate)
         }
     }
     
@@ -1222,204 +1245,6 @@ private struct FactoryDroidMenuSectionHeader: View {
                 .fill(Color.primary.opacity(0.08))
                 .frame(height: 1)
         }
-    }
-}
-
-private struct AnalyticsDetailSection: View {
-    let analytics: QuotaAnalytics
-
-    @State private var trendMode: AnalyticsTrendMode = .daily
-
-    private static let primaryMetricRowIDs = [
-        "codex-lifetime-tokens",
-        "codex-peak-daily",
-        "codex-longest-task",
-        "codex-current-streak",
-        "codex-longest-streak"
-    ]
-
-    private static let usageMetricRowIDs = [
-        "codex-extra-usage",
-        "today",
-        "yesterday",
-        "last-30-days"
-    ]
-
-    private static let hiddenRowIDs = Set(primaryMetricRowIDs + usageMetricRowIDs)
-    private static let resetCreditsSummaryID = "codex-rate-limit-resets"
-    private static let resetCreditRowPrefix = "codex-rate-limit-reset-"
-
-    private var metricRows: [QuotaAnalyticsRow] {
-        metricRows(for: Self.primaryMetricRowIDs)
-    }
-
-    private var usageRows: [QuotaAnalyticsRow] {
-        metricRows(for: Self.usageMetricRowIDs)
-    }
-
-    private var shouldShowNote: Bool {
-        metricRows.isEmpty && usageRows.isEmpty && resetCreditsSummary == nil
-    }
-
-    private func metricRows(for ids: [String]) -> [QuotaAnalyticsRow] {
-        let rowsByID = analytics.rows.reduce(into: [String: QuotaAnalyticsRow]()) { result, row in
-            result[row.id] = result[row.id] ?? row
-        }
-        return ids.compactMap { rowsByID[$0] }
-    }
-
-    private var detailRows: [QuotaAnalyticsRow] {
-        analytics.rows.filter {
-            !Self.hiddenRowIDs.contains($0.id)
-                && $0.id != Self.resetCreditsSummaryID
-                && !$0.id.hasPrefix(Self.resetCreditRowPrefix)
-        }
-    }
-
-    private var resetCreditsSummary: QuotaAnalyticsRow? {
-        analytics.rows.first { $0.id == Self.resetCreditsSummaryID }
-    }
-
-    private var resetCreditRows: [QuotaAnalyticsRow] {
-        analytics.rows.filter { $0.id.hasPrefix(Self.resetCreditRowPrefix) }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            if !metricRows.isEmpty {
-                AnalyticsMetricStripView(rows: metricRows)
-            }
-
-            if !usageRows.isEmpty {
-                AnalyticsMetricStripView(rows: usageRows)
-            }
-
-            if let resetCreditsSummary {
-                ResetCreditsInventoryView(summary: resetCreditsSummary, credits: resetCreditRows)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Usage Trend")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.primary)
-
-                    Spacer()
-
-                    if analytics.trend.isEmpty {
-                        Text("No data")
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        AnalyticsTrendModePicker(selection: $trendMode)
-                    }
-                }
-
-                if !analytics.trend.isEmpty {
-                    UsageTrendHeatmap(points: analytics.trend, mode: trendMode)
-                        .id(trendMode)
-                }
-            }
-
-            ForEach(detailRows) { row in
-                AnalyticsRowView(row: row)
-            }
-
-            if shouldShowNote, let note = analytics.note, !note.isEmpty {
-                Text(note)
-                    .font(.system(size: 9, design: .rounded))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(10)
-    }
-}
-
-private struct ResetCreditsInventoryView: View {
-    let summary: QuotaAnalyticsRow
-    let credits: [QuotaAnalyticsRow]
-
-    private var countLabel: String {
-        let count = summary.value.split(separator: " ").first.map(String.init) ?? "0"
-        return "\(count) resets available"
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "gift")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Color.blue)
-
-            Text(countLabel)
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-
-            Spacer(minLength: 12)
-
-            HStack(spacing: 6) {
-                ForEach(Array(credits.enumerated()), id: \.element.id) { index, credit in
-                    ResetCreditChip(
-                        label: compactRelativeLabel(credit.value),
-                        tooltip: creditTooltip(credit),
-                        isNext: index == 0
-                    )
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(0.025))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.separator.opacity(0.45), lineWidth: 1)
-        )
-    }
-
-    private func compactRelativeLabel(_ value: String) -> String {
-        let lowercased = value.lowercased()
-        let parts = lowercased.split(separator: " ")
-        guard parts.count >= 3, parts.first == "in", let number = parts.dropFirst().first else {
-            return value.isEmpty ? "∞" : value
-        }
-
-        let unit = parts.dropFirst(2).first ?? ""
-        if unit.hasPrefix("day") { return "\(number)d" }
-        if unit.hasPrefix("hour") { return "\(number)h" }
-        if unit.hasPrefix("minute") { return "\(number)m" }
-        return String(number)
-    }
-
-    private func creditTooltip(_ credit: QuotaAnalyticsRow) -> String {
-        let suffix = credit.value.isEmpty ? "" : " - \(credit.value)"
-        return "Expires: \(credit.title)\(suffix)"
-    }
-}
-
-private struct ResetCreditChip: View {
-    let label: String
-    let tooltip: String
-    let isNext: Bool
-
-    var body: some View {
-        Text(label)
-            .font(.system(size: 12, weight: .medium, design: .monospaced))
-            .foregroundStyle(isNext ? Color.blue : .secondary)
-            .lineLimit(1)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(isNext ? Color.blue.opacity(0.18) : Color.primary.opacity(0.08))
-            )
-            .contentShape(Capsule(style: .continuous))
-            .menuNativeTooltip(tooltip)
     }
 }
 
@@ -1578,561 +1403,6 @@ private extension View {
     }
 }
 
-private struct AnalyticsMetricStripView: View {
-    let rows: [QuotaAnalyticsRow]
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                AnalyticsMetricTileView(row: row)
-                    .frame(maxWidth: .infinity)
-
-                if index < rows.count - 1 {
-                    Rectangle()
-                        .fill(.separator.opacity(0.45))
-                        .frame(width: 1, height: 34)
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(0.025))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.separator.opacity(0.45), lineWidth: 1)
-        )
-    }
-}
-
-private struct AnalyticsMetricTileView: View {
-    let row: QuotaAnalyticsRow
-
-    private var displayValue: String {
-        switch row.id {
-        case "codex-lifetime-tokens", "codex-peak-daily":
-            row.value.replacingOccurrences(of: " tokens", with: "")
-        default:
-            row.value
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 4) {
-            Text(displayValue)
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                .foregroundStyle(row.isAvailable ? .primary : .secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-
-            Text(row.title)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        }
-        .multilineTextAlignment(.center)
-        .padding(.horizontal, 6)
-        .frame(minWidth: 82)
-    }
-}
-
-private enum AnalyticsTrendMode: String, CaseIterable, Identifiable {
-    case daily
-    case weekly
-    case cumulative
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .daily: "Daily"
-        case .weekly: "Weekly"
-        case .cumulative: "Cumulative"
-        }
-    }
-}
-
-private struct AnalyticsTrendModePicker: View {
-    @Binding var selection: AnalyticsTrendMode
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ForEach(AnalyticsTrendMode.allCases) { mode in
-                Button {
-                    selection = mode
-                } label: {
-                    Text(mode.title)
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundStyle(selection == mode ? .primary : .tertiary)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-}
-
-private enum AnalyticsTrendSeries {
-    typealias ParsedPoint = (date: Date, point: QuotaAnalyticsPoint)
-
-    static func dailyPoints(from points: [QuotaAnalyticsPoint]) -> [QuotaAnalyticsPoint] {
-        parsedPoints(from: points).map { item in
-            QuotaAnalyticsPoint(
-                date: dayLabel(for: item.date),
-                value: item.point.value,
-                label: "on \(shortDateLabel(for: item.date))",
-                valueLabel: item.point.valueLabel.isEmpty ? tokenLabel(item.point.value) : item.point.valueLabel
-            )
-        }
-    }
-
-    static func weeklyBuckets(from points: [QuotaAnalyticsPoint], mode: AnalyticsTrendMode) -> [AnalyticsTrendBucket] {
-        let parsed = parsedPoints(from: points)
-        let grouped = Dictionary(grouping: parsed) { item in
-            startOfWeek(containing: item.date)
-        }
-        switch mode {
-        case .daily, .weekly:
-            return grouped.keys.sorted().map { weekStart in
-                let weeklyValue = grouped[weekStart, default: []].reduce(0) { total, item in
-                    total + item.point.value
-                }
-                return AnalyticsTrendBucket(
-                    weekStart: weekStart,
-                    value: weeklyValue,
-                    valueLabel: tokenLabel(weeklyValue),
-                    tooltipLabel: "on week of \(longDateLabel(for: weekStart))"
-                )
-            }
-        case .cumulative:
-            let sortedWeeks = grouped.keys.sorted()
-            guard let first = sortedWeeks.first, let last = sortedWeeks.last else {
-                return []
-            }
-
-            var buckets: [AnalyticsTrendBucket] = []
-            var runningTotal = 0.0
-            var weekStart = first
-
-            while weekStart <= last {
-                runningTotal += grouped[weekStart, default: []].reduce(0) { total, item in
-                    total + item.point.value
-                }
-                buckets.append(AnalyticsTrendBucket(
-                    weekStart: weekStart,
-                    value: runningTotal,
-                    valueLabel: tokenLabel(runningTotal),
-                    tooltipLabel: "through week of \(longDateLabel(for: weekStart))"
-                ))
-
-                guard let nextWeek = calendar.date(byAdding: .day, value: 7, to: weekStart) else {
-                    break
-                }
-                weekStart = nextWeek
-            }
-
-            return buckets
-        }
-    }
-
-    static var calendar: Calendar {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.firstWeekday = 1
-        return calendar
-    }
-
-    static func dayLabel(for date: Date) -> String {
-        let components = calendar.dateComponents([.year, .month, .day], from: date)
-        guard let year = components.year, let month = components.month, let day = components.day else {
-            return "Unknown"
-        }
-        return String(format: "%04d-%02d-%02d", year, month, day)
-    }
-
-    private static func parsedPoints(from points: [QuotaAnalyticsPoint]) -> [ParsedPoint] {
-        points.compactMap { point in
-            guard let date = date(from: point.date) else { return nil }
-            return (calendar.startOfDay(for: date), point)
-        }
-        .sorted { $0.date < $1.date }
-    }
-
-    private static func startOfWeek(containing date: Date) -> Date {
-        let components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
-        return calendar.date(from: components).map { calendar.startOfDay(for: $0) } ?? date
-    }
-
-    private static func date(from string: String) -> Date? {
-        let day = String(string.prefix(10))
-        let parts = day.split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
-    }
-
-    private static func shortDateLabel(for date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MMM d"
-        return formatter.string(from: date)
-    }
-
-    private static func longDateLabel(for date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MMM d, yyyy"
-        return formatter.string(from: date)
-    }
-
-    private static func tokenLabel(_ value: Double) -> String {
-        let absoluteValue = abs(value)
-        if absoluteValue >= 1_000_000_000 {
-            return "\(compactNumber(value / 1_000_000_000))B tokens"
-        }
-        if absoluteValue >= 1_000_000 {
-            return "\(compactNumber(value / 1_000_000))M tokens"
-        }
-        if absoluteValue >= 1_000 {
-            return "\(compactNumber(value / 1_000))K tokens"
-        }
-        return "\(Int(value.rounded())) tokens"
-    }
-
-    private static func compactNumber(_ value: Double) -> String {
-        let rounded = (value * 10).rounded() / 10
-        if rounded.truncatingRemainder(dividingBy: 1) == 0 {
-            return "\(Int(rounded))"
-        }
-        return String(format: "%.1f", rounded)
-    }
-}
-
-private struct AnalyticsTrendBucket: Identifiable {
-    var id: String { AnalyticsTrendSeries.dayLabel(for: weekStart) }
-    let weekStart: Date
-    let value: Double
-    let valueLabel: String
-    let tooltipLabel: String
-}
-
-private struct UsageTrendHeatmap: View {
-    let points: [QuotaAnalyticsPoint]
-    let mode: AnalyticsTrendMode
-
-    @State private var hoveredCellID: String?
-    @State private var hoveredText: String?
-
-    private let cellSize: CGFloat = 9
-    private let spacing: CGFloat = 2.4
-
-    private var calendar: Calendar {
-        AnalyticsTrendSeries.calendar
-    }
-
-    private var parsedPoints: [(date: Date, point: QuotaAnalyticsPoint)] {
-        AnalyticsTrendSeries.dailyPoints(from: points).compactMap { point in
-            guard let date = Self.date(from: point.date, calendar: calendar) else { return nil }
-            return (calendar.startOfDay(for: date), point)
-        }
-        .sorted { $0.date < $1.date }
-    }
-
-    private var heatmapData: HeatmapData {
-        switch mode {
-        case .daily:
-            dailyHeatmapData()
-        case .weekly, .cumulative:
-            weeklyHeatmapData()
-        }
-    }
-
-    private func dailyHeatmapData() -> HeatmapData {
-        let parsed = parsedPoints
-        guard let last = parsed.last?.date else {
-            return HeatmapData(weeks: [], monthLabels: [], width: 0)
-        }
-
-        let pointByDate = parsed.reduce(into: [Date: QuotaAnalyticsPoint]()) { result, item in
-            result[item.date] = item.point
-        }
-        let maxValue = max(parsed.map(\.point.value).max() ?? 0, 1)
-        let first = displayStartDate(endingAt: last)
-        let start = startOfWeek(containing: first)
-        let days = max(calendar.dateComponents([.day], from: start, to: last).day ?? 0, 0)
-        let weekCount = min((days / 7) + 1, 54)
-
-        let weeks = (0..<weekCount).map { weekIndex in
-            let cells = (0..<7).map { weekdayIndex -> HeatmapCell in
-                let dayOffset = weekIndex * 7 + weekdayIndex
-                let date = calendar.date(byAdding: .day, value: dayOffset, to: start) ?? start
-                let point = pointByDate[date]
-                let intensity = point.map { point in
-                    point.value <= 0 ? 0 : max(0.18, min(point.value / maxValue, 1))
-                } ?? 0
-                let isInRange = date >= first && date <= last
-                return HeatmapCell(
-                    id: "\(weekIndex)-\(weekdayIndex)",
-                    date: date,
-                    point: point,
-                    intensity: intensity,
-                    isInRange: isInRange
-                )
-            }
-            return HeatmapWeek(id: weekIndex, cells: cells)
-        }
-
-        let labels = monthLabels(from: start, first: first, last: last, weekCount: weekCount)
-        let width = CGFloat(weekCount) * cellSize + CGFloat(max(weekCount - 1, 0)) * spacing
-        return HeatmapData(weeks: weeks, monthLabels: labels, width: width)
-    }
-
-    private func weeklyHeatmapData() -> HeatmapData {
-        let buckets = AnalyticsTrendSeries.weeklyBuckets(from: points, mode: mode)
-        guard let last = buckets.last?.weekStart else {
-            return HeatmapData(weeks: [], monthLabels: [], width: 0)
-        }
-
-        let bucketByWeek = buckets.reduce(into: [Date: AnalyticsTrendBucket]()) { result, bucket in
-            result[bucket.weekStart] = bucket
-        }
-        let maxValue = max(buckets.map(\.value).max() ?? 0, 1)
-        let first = startOfWeek(containing: displayStartDate(endingAt: last))
-        let days = max(calendar.dateComponents([.day], from: first, to: last).day ?? 0, 0)
-        let weekCount = min((days / 7) + 1, 54)
-
-        let weeks = (0..<weekCount).map { weekIndex in
-            let weekStart = calendar.date(byAdding: .day, value: weekIndex * 7, to: first) ?? first
-            let bucket = bucketByWeek[weekStart]
-            let normalizedValue = bucket.map { $0.value <= 0 ? 0 : max(0.14, min($0.value / maxValue, 1)) } ?? 0
-            let filledRows = normalizedValue <= 0 ? 0 : max(1, min(Int((normalizedValue * 7).rounded(.up)), 7))
-
-            let cells = (0..<7).map { rowIndex -> HeatmapCell in
-                let isFilled = rowIndex >= 7 - filledRows
-                let point = bucket.map { bucket -> QuotaAnalyticsPoint in
-                    QuotaAnalyticsPoint(
-                        date: AnalyticsTrendSeries.dayLabel(for: weekStart),
-                        value: bucket.value,
-                        label: bucket.tooltipLabel,
-                        valueLabel: bucket.valueLabel
-                    )
-                }
-
-                return HeatmapCell(
-                    id: "\(weekIndex)-\(rowIndex)",
-                    date: weekStart,
-                    point: isFilled ? point : nil,
-                    intensity: isFilled ? normalizedValue : 0,
-                    isInRange: true
-                )
-            }
-            return HeatmapWeek(id: weekIndex, cells: cells)
-        }
-
-        let labels = monthLabels(from: first, first: first, last: last, weekCount: weekCount)
-        let width = CGFloat(weekCount) * cellSize + CGFloat(max(weekCount - 1, 0)) * spacing
-        return HeatmapData(weeks: weeks, monthLabels: labels, width: width)
-    }
-
-    var body: some View {
-        let data = heatmapData
-
-        ZStack(alignment: .topTrailing) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 0) {
-                    ForEach(data.monthLabels) { label in
-                        Text(label.title)
-                            .font(.system(size: 9, weight: .medium, design: .rounded))
-                            .foregroundStyle(.tertiary)
-                            .frame(width: monthLabelWidth(for: label, in: data), alignment: .leading)
-                    }
-                }
-                .frame(width: data.width, height: 12, alignment: .leading)
-
-                HStack(alignment: .top, spacing: spacing) {
-                    ForEach(data.weeks) { week in
-                        VStack(spacing: spacing) {
-                            ForEach(week.cells) { cell in
-                                heatmapCell(cell)
-                            }
-                        }
-                    }
-                }
-                .frame(width: data.width, alignment: .leading)
-            }
-
-            if let hoveredText {
-                Text(hoveredText)
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.regularMaterial, in: Capsule())
-                    .overlay(
-                        Capsule()
-                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                    )
-                    .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
-                    .offset(y: 18)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 2)
-    }
-
-    private func heatmapCell(_ cell: HeatmapCell) -> some View {
-        RoundedRectangle(cornerRadius: 2.4, style: .continuous)
-            .fill(fillColor(for: cell))
-            .frame(width: cellSize, height: cellSize)
-            .opacity(cell.isInRange ? 1 : 0)
-            .overlay {
-                if hoveredCellID == cell.id, cell.point != nil {
-                    RoundedRectangle(cornerRadius: 2.4, style: .continuous)
-                        .stroke(Color.primary.opacity(0.18), lineWidth: 1)
-                }
-            }
-            .onHover { hovering in
-                updateHover(hovering, cell: cell)
-            }
-    }
-
-    private func fillColor(for cell: HeatmapCell) -> Color {
-        guard cell.intensity > 0 else {
-            return Color.primary.opacity(0.06)
-        }
-        return Color.accentColor.opacity(0.16 + cell.intensity * 0.78)
-    }
-
-    private func updateHover(_ hovering: Bool, cell: HeatmapCell) {
-        guard let point = cell.point else {
-            if !hovering, hoveredCellID == cell.id {
-                hoveredCellID = nil
-                hoveredText = nil
-            }
-            return
-        }
-
-        if hovering {
-            hoveredCellID = cell.id
-            hoveredText = point.label.isEmpty
-                ? "\(point.valueLabel) on \(Self.shortDateLabel(for: cell.date))"
-                : "\(point.valueLabel) \(point.label)"
-        } else if hoveredCellID == cell.id {
-            hoveredCellID = nil
-            hoveredText = nil
-        }
-    }
-
-    private func monthLabelWidth(for label: MonthLabel, in data: HeatmapData) -> CGFloat {
-        guard let index = data.monthLabels.firstIndex(where: { $0.id == label.id }) else {
-            return 0
-        }
-        let nextColumn = data.monthLabels.dropFirst(index + 1).first?.column ?? data.weeks.count
-        let columns = max(nextColumn - label.column, 1)
-        return CGFloat(columns) * cellSize + CGFloat(max(columns - 1, 0)) * spacing
-    }
-
-    private func startOfWeek(containing date: Date) -> Date {
-        let components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
-        return calendar.date(from: components).map { calendar.startOfDay(for: $0) } ?? date
-    }
-
-    private func displayStartDate(endingAt date: Date) -> Date {
-        calendar.date(byAdding: .day, value: -370, to: date)
-            .map { calendar.startOfDay(for: $0) } ?? date
-    }
-
-    private func monthLabels(from start: Date, first: Date, last: Date, weekCount: Int) -> [MonthLabel] {
-        var labels: [MonthLabel] = []
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MMM"
-
-        var components = calendar.dateComponents([.year, .month], from: first)
-        components.day = 1
-        var monthStart = calendar.date(from: components) ?? first
-        if monthStart < first {
-            monthStart = calendar.date(byAdding: .month, value: 1, to: monthStart) ?? first
-        }
-
-        while monthStart <= last {
-            let column = max(calendar.dateComponents([.day], from: start, to: monthStart).day ?? 0, 0) / 7
-            if column < weekCount {
-                labels.append(MonthLabel(
-                    id: AnalyticsTrendSeries.dayLabel(for: monthStart),
-                    title: formatter.string(from: monthStart),
-                    column: column
-                ))
-            }
-            guard let nextMonth = calendar.date(byAdding: .month, value: 1, to: monthStart) else { break }
-            monthStart = nextMonth
-        }
-        return labels
-    }
-
-    private static func date(from string: String, calendar: Calendar) -> Date? {
-        let day = String(string.prefix(10))
-        let parts = day.split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
-    }
-
-    private static func shortDateLabel(for date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MMM d"
-        return formatter.string(from: date)
-    }
-
-    private struct HeatmapData {
-        let weeks: [HeatmapWeek]
-        let monthLabels: [MonthLabel]
-        let width: CGFloat
-    }
-
-    private struct HeatmapWeek: Identifiable {
-        let id: Int
-        let cells: [HeatmapCell]
-    }
-
-    private struct HeatmapCell: Identifiable {
-        let id: String
-        let date: Date
-        let point: QuotaAnalyticsPoint?
-        let intensity: Double
-        let isInRange: Bool
-    }
-
-    private struct MonthLabel: Identifiable {
-        let id: String
-        let title: String
-        let column: Int
-    }
-}
-
-private struct AnalyticsRowView: View {
-    let row: QuotaAnalyticsRow
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(row.title)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundStyle(row.isAvailable ? .primary : .secondary)
-                .lineLimit(1)
-
-            Spacer(minLength: 8)
-
-            Text(row.value)
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .foregroundStyle(row.isAvailable ? .primary : .secondary)
-                .multilineTextAlignment(.trailing)
-                .lineLimit(1)
-        }
-    }
-}
-
 private struct ModelBadgeData: Identifiable {
     let name: String
     let percentage: Double
@@ -2147,6 +1417,15 @@ private struct ModelBadgeData: Identifiable {
     }
 
     var id: String { name }
+
+    /// The reset date rounded down to the minute, matching `StatusBarMenuBuilder.sharedResetDate`.
+    var resetMinute: Date? {
+        guard let resetTime else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = fractional.date(from: resetTime) ?? ISO8601DateFormatter().date(from: resetTime) else { return nil }
+        return Date(timeIntervalSince1970: (date.timeIntervalSince1970 / 60).rounded(.down) * 60)
+    }
 
     var formattedResetTime: String? {
         guard let resetTime = resetTime else { return nil }
@@ -2343,53 +1622,53 @@ private struct RingGridLayout: View {
 
 private struct CardGridLayout: View {
     let models: [ModelBadgeData]
+    var sharedResetDate: Date? = nil
     
     private var settings: MenuBarSettingsManager { MenuBarSettingsManager.shared }
 
     private var columns: [GridItem] {
-        // Single metric: full width. Multiple: 2 columns
-        if models.count == 1 {
-            return [GridItem(.flexible())]
-        } else {
-            return [GridItem(.flexible()), GridItem(.flexible())]
-        }
+        // Up to 3 compact columns so many accounts fit in the popover.
+        Array(repeating: GridItem(.flexible(), spacing: 14), count: min(max(models.count, 1), 3))
     }
     
     var body: some View {
         let displayMode = settings.quotaDisplayMode
         
-        LazyVGrid(columns: columns, spacing: 8) {
+        LazyVGrid(columns: columns, spacing: 6) {
             ForEach(models, id: \.name) { (model: ModelBadgeData) in
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack {
+                    HStack(spacing: 4) {
                         Text(model.name)
-                            .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(.primary.opacity(0.85))
                             .lineLimit(1)
-                        Spacer()
-                        if let resetTime = model.formattedResetTime {
-                            Text(resetTime)
-                                .font(.system(size: 9, design: .rounded))
-                                .foregroundStyle(.tertiary)
+                        Spacer(minLength: 0)
+                        if let resetTime = model.formattedResetTime, model.resetMinute != sharedResetDate {
+                            HStack(spacing: 2) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.system(size: 9, weight: .semibold))
+                                Text(resetTime)
+                                    .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                                    .monospacedDigit()
+                            }
+                            .foregroundStyle(.primary.opacity(0.7))
+                            .lineLimit(1)
                         }
                         if let usage = model.usage {
                             Text(usage)
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .font(.system(size: 11.5, weight: .bold, design: .monospaced))
                                 .foregroundStyle(.primary)
                         } else {
                             Text(menuPercentText(remainingPercent: model.percentage, displayMode: displayMode))
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .font(.system(size: 11.5, weight: .bold, design: .monospaced))
                                 .foregroundStyle(menuStatusColor(remainingPercent: model.percentage, displayMode: displayMode))
                         }
                     }
 
                     if model.usage == nil {
-                        ModernProgressBar(percentage: model.percentage, height: 4)
+                        ModernProgressBar(percentage: model.percentage, height: 5)
                     }
                 }
-                .padding(8)
-                .background(Color.secondary.opacity(0.05))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
     }

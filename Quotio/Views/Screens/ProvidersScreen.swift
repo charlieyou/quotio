@@ -419,10 +419,6 @@ struct ProvidersScreen: View {
                         .clipShape(Capsule())
                 }
             }
-        } footer: {
-            if !groupedAccounts.isEmpty {
-                MenuBarHintView()
-            }
         }
     }
     
@@ -745,29 +741,6 @@ struct CustomProviderRow: View {
     }
 }
 
-// MARK: - Menu Bar Badge Component
-
-struct MenuBarBadge: View {
-    let isSelected: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? Color.blue.opacity(0.1) : Color.clear)
-                    .frame(width: 28, height: 28)
-
-                Image(systemName: isSelected ? "chart.bar.fill" : "chart.bar")
-                    .font(.system(size: 14))
-                    .foregroundStyle(isSelected ? .blue : .secondary)
-            }
-        }
-        .buttonStyle(.plain)
-        .nativeTooltip(isSelected ? "menubar.hideFromMenuBar".localized() : "menubar.showOnMenuBar".localized())
-    }
-}
-
 // MARK: - Native Tooltip Support
 
 private class TooltipWindow: NSWindow {
@@ -891,21 +864,6 @@ private struct NativeTooltipView: NSViewRepresentable {
 private extension View {
     func nativeTooltip(_ text: String) -> some View {
         self.overlay(NativeTooltipView(text: text))
-    }
-}
-
-// MARK: - Menu Bar Hint View
-
-struct MenuBarHintView: View {
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "chart.bar.fill")
-                .foregroundStyle(.blue)
-                .font(.caption2)
-            Text("menubar.hint".localized())
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
     }
 }
 

@@ -901,11 +901,6 @@ struct NotificationSettingsSection: View {
                     set: { manager.notifyOnProxyCrash = $0 }
                 ))
                 
-                Toggle("settings.notifications.upgradeAvailable".localized(), isOn: Binding(
-                    get: { manager.notifyOnUpgradeAvailable },
-                    set: { manager.notifyOnUpgradeAvailable = $0 }
-                ))
-                
                 HStack {
                     Text("settings.notifications.threshold".localized())
                     Spacer()
@@ -1018,48 +1013,6 @@ struct RefreshCadenceSettingsSection: View {
         } footer: {
             Text("settings.refresh.help".localized())
                 .font(.caption)
-        }
-    }
-}
-
-// MARK: - Update Settings Section
-
-struct UpdateSettingsSection: View {
-    @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
-    
-    #if canImport(Sparkle)
-    private let updaterService = UpdaterService.shared
-    #endif
-    
-    var body: some View {
-        Section {
-            #if canImport(Sparkle)
-            Toggle("settings.autoCheckUpdates".localized(), isOn: $autoCheckUpdates)
-                .onChange(of: autoCheckUpdates) { _, newValue in
-                    updaterService.automaticallyChecksForUpdates = newValue
-                }
-            
-            HStack {
-                Text("settings.lastChecked".localized())
-                Spacer()
-                if let date = updaterService.lastUpdateCheckDate {
-                    Text(date, style: .relative)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("settings.never".localized())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            
-            Button("settings.checkNow".localized()) {
-                updaterService.checkForUpdates()
-            }
-            .disabled(!updaterService.canCheckForUpdates)
-            #else
-            Text("settings.version".localized() + ": " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"))
-            #endif
-        } header: {
-            Label("settings.updates".localized(), systemImage: "arrow.down.circle")
         }
     }
 }
@@ -1653,8 +1606,6 @@ struct MenuBarSettingsSection: View {
     @Environment(QuotaViewModel.self) private var viewModel
     private let settings = MenuBarSettingsManager.shared
     @AppStorage("showInDock") private var showInDock = true
-    @State private var showTruncationAlert = false
-    @State private var pendingMaxItems: Int?
     
     private var showMenuBarIconBinding: Binding<Bool> {
         Binding(
@@ -1706,31 +1657,6 @@ struct MenuBarSettingsSection: View {
         )
     }
 
-    private var stackPairedQuotaMetricsBinding: Binding<Bool> {
-        Binding(
-            get: { settings.stackPairedQuotaMetrics },
-            set: { settings.stackPairedQuotaMetrics = $0 }
-        )
-    }
-    
-    private var maxItemsBinding: Binding<Int> {
-        Binding(
-            get: { settings.menuBarMaxItems },
-            set: { newValue in
-                let clamped = min(max(newValue, MenuBarSettingsManager.minMenuBarItems), MenuBarSettingsManager.maxMenuBarItems)
-
-                // Check if reducing max items would truncate current selection
-                if clamped < settings.menuBarMaxItems && settings.selectedItems.count > clamped {
-                    pendingMaxItems = clamped
-                    showTruncationAlert = true
-                } else {
-                    settings.menuBarMaxItems = clamped
-                    viewModel.syncMenuBarSelection()
-                }
-            }
-        )
-    }
-    
     var body: some View {
         Section {
             Toggle("settings.showInDock".localized(), isOn: showInDockBinding)
@@ -1741,26 +1667,6 @@ struct MenuBarSettingsSection: View {
                 Toggle("settings.menubar.showQuota".localized(), isOn: showQuotaBinding)
                 
                 if settings.showQuotaInMenuBar {
-                    Toggle(
-                        "settings.menubar.stackPairedQuotaMetrics".localized(),
-                        isOn: stackPairedQuotaMetricsBinding
-                    )
-
-                    HStack {
-                        Text("settings.menubar.maxItems".localized())
-                        Spacer()
-                        Text("\(settings.menuBarMaxItems)")
-                            .monospacedDigit()
-                            .foregroundStyle(.primary)
-                        Stepper(
-                            "",
-                            value: maxItemsBinding,
-                            in: MenuBarSettingsManager.minMenuBarItems...MenuBarSettingsManager.maxMenuBarItems,
-                            step: 1
-                        )
-                        .labelsHidden()
-                    }
-                    
                     Picker("settings.menubar.colorMode".localized(), selection: colorModeBinding) {
                         Text("settings.menubar.colored".localized()).tag(MenuBarColorMode.colored)
                         Text("settings.menubar.monochrome".localized()).tag(MenuBarColorMode.monochrome)
@@ -1770,32 +1676,6 @@ struct MenuBarSettingsSection: View {
             }
         } header: {
             Label("settings.menubar".localized(), systemImage: "menubar.rectangle")
-        } footer: {
-            Text(String(
-                format: "settings.menubar.help".localized(),
-                settings.menuBarMaxItems
-            ))
-            .font(.caption)
-        }
-        .alert("menubar.truncation.title".localized(), isPresented: $showTruncationAlert) {
-            Button("action.cancel".localized(), role: .cancel) {
-                pendingMaxItems = nil
-            }
-            Button("action.ok".localized(), role: .destructive) {
-                if let newMax = pendingMaxItems {
-                    settings.menuBarMaxItems = newMax
-                    viewModel.syncMenuBarSelection()
-                    pendingMaxItems = nil
-                }
-            }
-        } message: {
-            if let newMax = pendingMaxItems {
-                Text(String(
-                    format: "menubar.truncation.message".localized(),
-                    settings.selectedItems.count,
-                    newMax
-                ))
-            }
         }
     }
 }
@@ -2156,7 +2036,6 @@ struct AboutTab: View {
 struct AboutScreen: View {
     @State private var showCopiedToast = false
     @State private var isHoveringVersion = false
-    @State private var updaterService = UpdaterService.shared
     
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -2199,11 +2078,6 @@ struct AboutScreen: View {
                     .transition(.opacity)
             }
         }
-        .onAppear {
-            #if canImport(Sparkle)
-            updaterService.initializeIfNeeded()
-            #endif
-        }
         .navigationTitle("nav.about".localized())
     }
     
@@ -2229,8 +2103,7 @@ struct AboutScreen: View {
                     .frame(width: 160, height: 160)
                     .blur(radius: 40)
                 
-                // App Icon - uses observable currentAppIcon from UpdaterService
-                if let appIcon = UpdaterService.shared.currentAppIcon {
+                if let appIcon = NSApp.applicationIconImage {
                     Image(nsImage: appIcon)
                         .resizable()
                         .frame(width: 96, height: 96)
@@ -2285,8 +2158,6 @@ struct AboutScreen: View {
     
     private var updatesSection: some View {
         VStack(spacing: 12) {
-            AboutUpdateCard()
-            
             if OperatingModeManager.shared.isLocalProxyMode {
                 AboutProxyUpdateCard()
             }
@@ -2412,100 +2283,6 @@ struct VersionBadge: View {
         .buttonStyle(.plain)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) {
-                isHovered = hovering
-            }
-        }
-    }
-}
-
-// MARK: - About Update Card
-
-struct AboutUpdateCard: View {
-    @AppStorage("autoCheckUpdates") private var autoCheckUpdates = true
-    @State private var isHovered = false
-    
-    #if canImport(Sparkle)
-    private let updaterService = UpdaterService.shared
-    #endif
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            cardHeader(
-                title: "settings.updates".localized(),
-                systemImage: "arrow.down.circle",
-                color: .blue
-            )
-            
-            #if canImport(Sparkle)
-            HStack {
-                Text("settings.autoCheckUpdates".localized())
-                    .font(.subheadline)
-                Spacer()
-                Toggle("", isOn: $autoCheckUpdates)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .onChange(of: autoCheckUpdates) { _, newValue in
-                        updaterService.automaticallyChecksForUpdates = newValue
-                    }
-            }
-            
-            HStack {
-                Text("settings.updateChannel.receiveBeta".localized())
-                    .font(.subheadline)
-                Spacer()
-                Toggle("", isOn: Binding(
-                    get: { updaterService.updateChannel == .beta },
-                    set: { newValue in
-                        updaterService.updateChannel = newValue ? .beta : .stable
-                    }
-                ))
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-            }
-            
-            Divider()
-
-            HStack {
-                Text("settings.lastChecked".localized())
-                Spacer()
-                if let date = updaterService.lastUpdateCheckDate {
-                    Text(date, style: .relative)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("settings.never".localized())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            HStack {
-                Spacer()
-
-                Button("settings.checkNow".localized()) {
-                    updaterService.checkForUpdates()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-            #else
-            Text("settings.version".localized() + ": " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"))
-                .font(.caption)
-            #endif
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(
-            color: .black.opacity(isHovered ? 0.08 : 0.04),
-            radius: isHovered ? 8 : 4,
-            x: 0,
-            y: isHovered ? 2 : 1
-        )
-        .scaleEffect(isHovered ? 1.01 : 1.0)
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.2)) {
                 isHovered = hovering
             }
         }

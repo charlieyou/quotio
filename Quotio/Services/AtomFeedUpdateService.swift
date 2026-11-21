@@ -59,8 +59,6 @@ final class AtomFeedUpdateService {
 
     // MARK: - Polling Configuration
 
-    /// Polling interval in seconds (5 minutes)
-    private static let pollingIntervalSeconds: UInt64 = 5 * 60
 
     // MARK: - Observable Properties
 
@@ -78,8 +76,6 @@ final class AtomFeedUpdateService {
 
     // MARK: - Private Properties
 
-    private var pollingTask: Task<Void, Never>?
-    private var isPollingEnabled: Bool = false
 
     /// Shared URLSession for all feed requests (avoids creating new sessions per request)
     @ObservationIgnored
@@ -206,73 +202,6 @@ final class AtomFeedUpdateService {
         // Clear cached ETag to force full fetch
         UserDefaults.standard.removeObject(forKey: Self.cliProxyCacheKey)
         return await checkForCLIProxyUpdate(currentVersion: currentVersion)
-    }
-
-    // MARK: - Background Polling
-
-    /// Start background polling for CLIProxyAPI updates.
-    /// Polls every 5 minutes using ETag caching for efficiency.
-    /// - Parameter getCurrentVersion: Closure that returns the current installed version
-    func startPolling(getCurrentVersion: @escaping () -> String?) {
-        guard !isPollingEnabled else { return }
-        isPollingEnabled = true
-
-        NSLog("[AtomFeedUpdateService] Starting background polling (interval: \(Self.pollingIntervalSeconds)s)")
-
-        pollingTask = Task { [weak self] in
-            // Initial check after short delay
-            try? await Task.sleep(nanoseconds: 5 * 1_000_000_000) // 5 seconds
-
-            while !Task.isCancelled {
-                guard let self = self else { break }
-
-                await self.performPollingCheck(getCurrentVersion: getCurrentVersion)
-
-                // Wait for next polling interval
-                try? await Task.sleep(nanoseconds: Self.pollingIntervalSeconds * 1_000_000_000)
-            }
-        }
-    }
-
-    /// Stop background polling.
-    func stopPolling() {
-        isPollingEnabled = false
-        pollingTask?.cancel()
-        pollingTask = nil
-        // Invalidate URLSession to release connections
-        urlSession.invalidateAndCancel()
-        NSLog("[AtomFeedUpdateService] Stopped background polling")
-    }
-
-    /// Perform a single polling check and update observable state.
-    private func performPollingCheck(getCurrentVersion: () -> String?) async {
-        isChecking = true
-        defer { isChecking = false }
-
-        let currentVersion = getCurrentVersion()
-        let (latestVersion, isNewer) = await checkForCLIProxyUpdate(currentVersion: currentVersion)
-
-        lastCLIProxyCheck = Date()
-        latestCLIProxyVersion = latestVersion
-
-        if isNewer && latestVersion != nil {
-            // Only notify if this is a NEW update (not previously notified)
-            let notifiedKey = "notifiedCLIProxyVersion"
-            let previouslyNotified = UserDefaults.standard.string(forKey: notifiedKey)
-
-            if previouslyNotified != latestVersion {
-                cliProxyUpdateAvailable = true
-                UserDefaults.standard.set(latestVersion, forKey: notifiedKey)
-
-                // Send system notification
-                if let version = latestVersion {
-                    NotificationManager.shared.notifyUpgradeAvailable(version: version)
-                    NSLog("[AtomFeedUpdateService] New CLIProxyAPI version available: \(version)")
-                }
-            }
-        } else {
-            cliProxyUpdateAvailable = false
-        }
     }
 
     /// Manually trigger an update check (for "Check for Updates" button).

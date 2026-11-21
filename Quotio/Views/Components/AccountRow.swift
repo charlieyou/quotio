@@ -185,13 +185,7 @@ struct AccountRow: View {
     var isActiveInIDE: Bool = false
     
     @State private var settings = MenuBarSettingsManager.shared
-    @State private var showWarning = false
-    @State private var showMaxItemsAlert = false
     @State private var showDeleteConfirmation = false
-    
-    private var isMenuBarSelected: Bool {
-        settings.isSelected(account.menuBarItem)
-    }
     
     private var maskedDisplayName: String {
         account.displayName.masked(if: settings.hideSensitiveInfo)
@@ -297,12 +291,6 @@ struct AccountRow: View {
                 .help("antigravity.switch.title".localized())
             }
             
-            // Menu bar toggle
-            MenuBarBadge(
-                isSelected: isMenuBarSelected,
-                onTap: handleMenuBarToggle
-            )
-
             // Disable/Enable toggle button (only for proxy accounts)
             if account.source.supportsDisable, let onToggleDisabled = onToggleDisabled {
                 Button {
@@ -368,17 +356,6 @@ struct AccountRow: View {
                 }
             }
 
-            // Menu bar toggle
-            Button {
-                handleMenuBarToggle()
-            } label: {
-                if isMenuBarSelected {
-                    Label("menubar.hideFromMenuBar".localized(), systemImage: "chart.bar")
-                } else {
-                    Label("menubar.showOnMenuBar".localized(), systemImage: "chart.bar.fill")
-                }
-            }
-
             // Disable/Enable toggle (only for proxy accounts)
             if account.source.supportsDisable, let onToggleDisabled = onToggleDisabled {
                 Button {
@@ -410,34 +387,6 @@ struct AccountRow: View {
             Button("action.cancel".localized(), role: .cancel) {}
         } message: {
             Text("providers.deleteMessage".localized())
-        }
-        .alert("menubar.warning.title".localized(), isPresented: $showWarning) {
-            Button("menubar.warning.confirm".localized()) {
-                settings.toggleItem(account.menuBarItem)
-            }
-            Button("menubar.warning.cancel".localized(), role: .cancel) {}
-        } message: {
-            Text("menubar.warning.message".localized())
-        }
-        .alert("menubar.maxItems.title".localized(), isPresented: $showMaxItemsAlert) {
-            Button("action.ok".localized(), role: .cancel) {}
-        } message: {
-            Text(String(
-                format: "menubar.maxItems.message".localized(),
-                settings.menuBarMaxItems
-            ))
-        }
-    }
-    
-    private func handleMenuBarToggle() {
-        if isMenuBarSelected {
-            settings.toggleItem(account.menuBarItem)
-        } else if settings.isAtMaxItems {
-            showMaxItemsAlert = true
-        } else if settings.shouldWarnOnAdd {
-            showWarning = true
-        } else {
-            settings.toggleItem(account.menuBarItem)
         }
     }
 }

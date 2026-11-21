@@ -112,10 +112,6 @@ struct AllAccountsSection: View {
             }
         } header: {
             sectionHeader
-        } footer: {
-            if !accounts.isEmpty {
-                MenuBarHintView()
-            }
         }
     }
     

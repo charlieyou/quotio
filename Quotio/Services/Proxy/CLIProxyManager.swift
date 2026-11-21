@@ -1617,10 +1617,6 @@ extension CLIProxyManager {
         // Save the installed version
         saveInstalledVersion(installed.version)
         
-        // Suppress any future upgrade notifications for this version
-        // This prevents the bug where a notification is shown immediately after upgrading
-        NotificationManager.shared.suppressUpgradeNotification(version: installed.version)
-        
         NotificationManager.shared.notifyUpgradeSuccess(version: installed.version)
     }
     

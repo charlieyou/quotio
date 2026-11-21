@@ -173,3 +173,32 @@ final class MenuBarQuotaPairTests: XCTestCase {
         XCTAssertLessThan(hostingView.fittingSize.width, 40)
     }
 }
+
+final class MenuBarWeeklySummaryTests: XCTestCase {
+    @MainActor
+    func testAveragesWeeklyRemainingPerProviderSkippingForbiddenAndScopedWindows() {
+        func account(_ models: [(String, Double)], forbidden: Bool = false) -> ProviderQuotaData {
+            ProviderQuotaData(
+                models: models.map { ModelQuota(name: $0.0, percentage: $0.1, resetTime: "") },
+                lastUpdated: Date(),
+                isForbidden: forbidden
+            )
+        }
+        let quotas: [AIProvider: [String: ProviderQuotaData]] = [
+            .claude: [
+                "a": account([("five-hour-session", 5), ("seven-day-weekly", 90), ("seven-day-fable", 0)]),
+                "b": account([("seven-day-weekly", 30)]),
+                "c": account([("five-hour-session", 10)]),
+                "d": account([("seven-day-weekly", 0)], forbidden: true),
+            ],
+            .codex: ["x": account([("codex-session", 1), ("codex-weekly", 67)])],
+            .copilot: ["y": account([("chat", 10)])],
+        ]
+
+        let items = MenuBarWeeklySummary.items(from: quotas)
+
+        XCTAssertEqual(items.map(\.provider), [.claude, .codex])
+        XCTAssertEqual(items[0].percentage, 60, accuracy: 0.001)
+        XCTAssertEqual(items[1].percentage, 67, accuracy: 0.001)
+    }
+}

@@ -4,14 +4,14 @@
 
 Quotio is a native macOS menu bar and window app for operating CLIProxyAPI. It manages
 the local proxy lifecycle, provider OAuth accounts, quota monitoring, CLI agent
-configuration, tunnels, updates, and optional telemetry.
+configuration, tunnels, and optional telemetry.
 
 - Swift 6 and SwiftUI, with targeted AppKit integration
 - Minimum deployment target: macOS 14.0
 - Xcode project: `Quotio.xcodeproj`; shared scheme: `Quotio`
 - Targets: `Quotio` (application) and `QuotioTests` (unit tests)
 - Dependency manager: Swift Package Manager through the Xcode project
-- Packages: Sparkle 2.8.1 and PostHog 3.64.1
+- Packages: PostHog 3.64.1 (this fork removed Sparkle; it never self-updates)
 - No CocoaPods, Carthage, Fastlane, root Swift package, or UI-test target
 
 The architecture is pragmatic MVVM. SwiftUI views and observable view models form the
@@ -26,7 +26,7 @@ Some views use shared managers or AppKit directly, so this is not strict layered
 - `Quotio/ViewModels/`: screen state and presentation orchestration; primarily
   `@MainActor @Observable` types.
 - `Quotio/Services/`: networking, OAuth, quota fetching, persistence, proxy/process
-  management, menu bar, tunnels, updates, logging, and agent configuration.
+  management, menu bar, tunnels, logging, and agent configuration.
 - `Quotio/Views/Screens/`: top-level SwiftUI screens.
 - `Quotio/Views/Components/`: reusable SwiftUI components.
 - `Quotio/Assets.xcassets`: app icon, accent color, provider art, and menu bar assets.

@@ -131,6 +131,35 @@ final class AccountSortingTests: XCTestCase {
         ])
     }
 
+    func testMenuBarOrdersAccountsBySoonestSharedResetThenEmail() {
+        let now = Date()
+        func iso(_ hours: Double) -> String { ISO8601DateFormatter().string(from: now.addingTimeInterval(hours * 3600)) }
+        func account(_ models: [(String, String)]) -> ProviderQuotaData {
+            ProviderQuotaData(models: models.map { ModelQuota(name: $0.0, percentage: 50, resetTime: $0.1) })
+        }
+        let quotas: [String: ProviderQuotaData] = [
+            // The 5h session resets soonest, but weekly and Fable share the later reset.
+            "alpha@example.com": account([("five-hour-session", iso(1)), ("seven-day-weekly", iso(48)), ("seven-day-fable", iso(48))]),
+            "bravo@example.com": account([("seven-day-weekly", iso(24))]),
+            "charlie@example.com": account([("seven-day-weekly", "")]),
+            "delta@example.com": account([("seven-day-weekly", iso(-1))]),
+            "echo@example.com": account([("seven-day-weekly", iso(24))]),
+            // No shared reset: the later (weekly) reset is the key, not the 5h session.
+            "foxtrot@example.com": account([("five-hour-session", iso(0.5)), ("seven-day-weekly", iso(72))]),
+        ]
+
+        let ordered = StatusBarMenuBuilder.orderedAccounts(quotas, provider: .claude) { _ in false }
+
+        XCTAssertEqual(ordered.map(\.email), [
+            "bravo@example.com",
+            "echo@example.com",
+            "alpha@example.com",
+            "foxtrot@example.com",
+            "charlie@example.com",
+            "delta@example.com"
+        ])
+    }
+
     func testMenuBarUsesAccountKeyFallbackForActiveCheck() {
         let quotas: [String: ProviderQuotaData] = [
             "alpha@example.com": quota(displayName: nil),

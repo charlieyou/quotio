@@ -105,8 +105,7 @@ final class TelemetryService {
             "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
             "build_number": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown",
             "bundle_id": Bundle.main.bundleIdentifier ?? "unknown",
-            "macos_version": ProcessInfo.processInfo.operatingSystemVersionString,
-            "update_channel": UpdaterService.shared.updateChannel.rawValue
+            "macos_version": ProcessInfo.processInfo.operatingSystemVersionString
         ]
     }
 

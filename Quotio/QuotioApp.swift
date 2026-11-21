@@ -6,9 +6,6 @@
 import AppKit
 import SwiftUI
 import ServiceManagement
-#if canImport(Sparkle)
-import Sparkle
-#endif
 
 private var isRunningUnitTests: Bool {
     ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -81,10 +78,6 @@ final class AppBootstrap {
 
         // Load data in background (includes proxy auto-start if enabled)
         await viewModel.initialize()
-
-        #if canImport(Sparkle)
-        UpdaterService.shared.checkForUpdatesInBackground()
-        #endif
     }
 
     func updateStatusBar() {
@@ -105,68 +98,7 @@ final class AppBootstrap {
     private var quotaItems: [MenuBarQuotaDisplayItem] {
         guard menuBarSettings.showQuotaInMenuBar else { return [] }
 
-        var items: [MenuBarQuotaDisplayItem] = []
-
-        for selectedItem in menuBarSettings.selectedItems {
-            guard let provider = selectedItem.aiProvider else { continue }
-
-            var displayPercent: Double = -1
-            var isForbidden = false
-            var quotaPair: MenuBarQuotaPair?
-
-            if let accountQuotas = viewModel.providerQuotas[provider],
-               let quotaData = resolveQuotaData(
-                   for: selectedItem,
-                   provider: provider,
-                   accountQuotas: accountQuotas
-               ) {
-                isForbidden = quotaData.isForbidden
-                if !quotaData.models.isEmpty {
-                    let models = quotaData.models.map { (name: $0.name, percentage: $0.percentage) }
-                    displayPercent = menuBarSettings.totalUsagePercent(models: models)
-                    if menuBarSettings.stackPairedQuotaMetrics {
-                        quotaPair = MenuBarQuotaPair.resolve(for: provider, from: quotaData.models)
-                    }
-                }
-            }
-
-            items.append(MenuBarQuotaDisplayItem(
-                id: selectedItem.id,
-                providerSymbol: provider.menuBarSymbol,
-                accountShort: selectedItem.accountKey,
-                percentage: displayPercent,
-                provider: provider,
-                isForbidden: isForbidden,
-                quotaPair: quotaPair
-            ))
-        }
-
-        return items
-    }
-
-    private func resolveQuotaData(
-        for selectedItem: MenuBarQuotaItem,
-        provider: AIProvider,
-        accountQuotas: [String: ProviderQuotaData]
-    ) -> ProviderQuotaData? {
-        if let quotaData = accountQuotas[selectedItem.accountKey] {
-            return quotaData
-        }
-
-        let cleanKey = selectedItem.accountKey.hasSuffix(".json")
-            ? String(selectedItem.accountKey.dropLast(".json".count))
-            : selectedItem.accountKey
-        if let quotaData = accountQuotas[cleanKey] {
-            return quotaData
-        }
-
-        if provider == .codex {
-            return accountQuotas[selectedItem.accountKey.codexFilenameKey]
-        }
-        if provider == .copilot, let filenameKey = selectedItem.accountKey.copilotFilenameKey {
-            return accountQuotas[filenameKey]
-        }
-        return nil
+        return MenuBarWeeklySummary.items(from: viewModel.providerQuotas)
     }
 }
 
@@ -237,18 +169,12 @@ struct QuotioApp: App {
                     .onChange(of: menuBarSettings.showMenuBarIcon) {
                         bootstrap.updateStatusBar()
                     }
-                    .onChange(of: menuBarSettings.selectedItems) {
-                        bootstrap.updateStatusBar()
-                    }
                     .onChange(of: menuBarSettings.colorMode) {
                         bootstrap.updateStatusBar()
                     }
                     .onChange(of: menuBarSettings.quotaDisplayMode) {
                         bootstrap.updateStatusBar()
                         statusBarManager.rebuildMenuInPlace()
-                    }
-                    .onChange(of: menuBarSettings.stackPairedQuotaMetrics) {
-                        bootstrap.updateStatusBar()
                     }
                     .onChange(of: menuBarSettings.totalUsageMode) {
                         bootstrap.updateStatusBar()
@@ -281,15 +207,6 @@ struct QuotioApp: App {
         .defaultSize(width: 1000, height: 700)
         .commands {
             CommandGroup(replacing: .newItem) { }
-
-            #if canImport(Sparkle)
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates...") {
-                    UpdaterService.shared.checkForUpdates()
-                }
-                .disabled(!UpdaterService.shared.canCheckForUpdates)
-            }
-            #endif
         }
     }
 }
@@ -333,12 +250,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // if already initialized.
         Task { @MainActor in
             await AppBootstrap.shared.initializeIfNeeded()
-
-            // Start background polling for CLIProxyAPI updates (every 5 minutes)
-            // Uses Atom feed with ETag caching for efficiency
-            AtomFeedUpdateService.shared.startPolling(
-                getCurrentVersion: { CLIProxyManager.shared.currentVersion ?? CLIProxyManager.shared.installedProxyVersion }
-            )
         }
 
         windowWillCloseObserver = NotificationCenter.default.addObserver(
@@ -500,9 +411,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Stop background polling
-        AtomFeedUpdateService.shared.stopPolling()
-
         CLIProxyManager.terminateProxyOnShutdown()
         
         // Use semaphore to ensure tunnel cleanup completes before app terminates

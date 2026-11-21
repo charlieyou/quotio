@@ -1901,6 +1901,8 @@ final class QuotaViewModel {
         defer { endScopedRefresh(provider: provider) }
 
         if modeManager.isRemoteProxyMode {
+            // Claude quotas come from rate-limit headers in the auth-files list, so reload it.
+            await refreshData(refreshQuotas: false)
             await refreshRemoteQuotasInternal(providers: [provider])
             await finishScopedRefresh(provider: provider)
             return
@@ -1959,6 +1961,8 @@ final class QuotaViewModel {
         defer { endScopedRefresh(provider: account.provider, account: account) }
 
         if modeManager.isRemoteProxyMode {
+            // Claude quotas come from rate-limit headers in the auth-files list, so reload it.
+            await refreshData(refreshQuotas: false)
             guard let client = apiClient,
                   let file = authFiles.first(where: {
                       $0.providerType == account.provider && $0.quotaLookupKey == account.accountKey

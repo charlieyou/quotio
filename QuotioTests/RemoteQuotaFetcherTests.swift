@@ -66,7 +66,11 @@ final class RemoteQuotaFetcherTests: XCTestCase {
     func testClaudeUsageBodyMapsToRemainingPercentages() throws {
         let file = try authFile(#"{"id":"c","auth_index":"11","name":"claude-a.json","provider":"claude","status":"active","disabled":false,"unavailable":false}"#)
         let request = try XCTUnwrap(RemoteQuotaFetcher.requests(for: file).first)
-        let body = #"{"five_hour":{"utilization":37,"resets_at":"2026-11-21T15:00:00Z"},"seven_day":{"utilization":81.5,"resets_at":"2026-11-25T00:00:00Z"},"seven_day_opus":null}"#
+        let body = #"""
+        {"five_hour":{"utilization":37,"resets_at":"2026-11-21T15:00:00Z"},"seven_day":{"utilization":81.5,"resets_at":"2026-11-25T00:00:00Z"},"seven_day_opus":null,
+         "limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Claude Fable"}},"percent":30,"resets_at":"2026-11-26T00:00:00Z"},
+                   {"kind":"session","scope":{"model":{"display_name":"Other"}},"percent":90}]}
+        """#
         let quota = try XCTUnwrap(RemoteQuotaFetcher.quota(
             for: file, request: request,
             response: APICallResponse(statusCode: 200, header: nil, body: body)
@@ -75,6 +79,8 @@ final class RemoteQuotaFetcherTests: XCTestCase {
         XCTAssertEqual(byName["five-hour-session"], 63)
         XCTAssertEqual(byName["seven-day-weekly"], 18.5)
         XCTAssertNil(byName["seven-day-opus"])
+        XCTAssertEqual(byName["seven-day-fable"], 70)
+        XCTAssertNil(byName["seven-day-other"], "only weekly_scoped limits are model windows")
     }
 
     func testCodexUsageBodyMapsWindowsAndKeepsPlanFromClaims() throws {
@@ -126,6 +132,43 @@ final class RemoteQuotaFetcherTests: XCTestCase {
         XCTAssertFalse(quota.isForbidden)
 
         XCTAssertNil(RemoteQuotaFetcher.observedClaudeQuota(for: file, maxAge: 3600, now: observedAt.addingTimeInterval(3601)))
+    }
+
+    func testClaudeFableWindowComesFromNewestFableModelObservation() throws {
+        let file = try authFile(#"""
+        {"id":"c","auth_index":"11","name":"claude-a.json","provider":"claude","status":"active","disabled":false,"unavailable":false,
+         "quota":{"observed_at":"2026-11-21T15:46:12Z","signals":{"Anthropic-Ratelimit-Unified-7d-Utilization":"0.5","Anthropic-Ratelimit-Unified-Status":"rejected"}},
+         "model_quotas":{
+           "claude-fable-5-1":{"observed_at":"2026-11-20T10:00:00Z","signals":{"Anthropic-Ratelimit-Unified-7d_oi-Utilization":"0.10"}},
+           "claude-fable-5-2":{"observed_at":"2026-11-21T15:00:00Z","signals":{"Anthropic-Ratelimit-Unified-7d_oi-Utilization":"1.01","Anthropic-Ratelimit-Unified-7d_oi-Reset":"1795300000"}},
+           "claude-sonnet-5":{"observed_at":"2026-11-21T15:40:00Z","signals":{"Anthropic-Ratelimit-Unified-7d_oi-Utilization":"0.40"}}}}
+        """#)
+        let now = ISO8601DateFormatter().date(from: "2026-11-21T15:47:00Z")!
+        let quota = try XCTUnwrap(RemoteQuotaFetcher.observedClaudeQuota(for: file, maxAge: 3600, now: now))
+        let fable = try XCTUnwrap(quota.models.first { $0.name == "seven-day-fable" })
+        XCTAssertEqual(fable.percentage, 0, "over-limit utilization clamps to 0% left")
+        XCTAssertEqual(fable.resetTime, "2026-11-21T22:26:40Z")
+        XCTAssertFalse(quota.isForbidden, "a rejected window is a limit, not an auth failure")
+    }
+
+    func testClaudeWindowsPastTheirResetAreFreshAndWeeklyResetRollsForward() throws {
+        // Every window reset at 16:00Z; the last observation was at 15:59Z (before the reset).
+        let file = try authFile(#"""
+        {"id":"c","auth_index":"11","name":"claude-a.json","provider":"claude","status":"active","disabled":false,"unavailable":false,
+         "quota":{"observed_at":"2026-11-21T15:59:00Z","signals":{
+           "Anthropic-Ratelimit-Unified-5h-Utilization":"0.32","Anthropic-Ratelimit-Unified-5h-Reset":"1795276800",
+           "Anthropic-Ratelimit-Unified-7d-Utilization":"0.78","Anthropic-Ratelimit-Unified-7d-Reset":"1795276800",
+           "Anthropic-Ratelimit-Unified-7d_oi-Utilization":"1.0","Anthropic-Ratelimit-Unified-7d_oi-Reset":"1795276800"}}}
+        """#)
+        let now = ISO8601DateFormatter().date(from: "2026-11-21T16:21:00Z")!
+        let quota = try XCTUnwrap(RemoteQuotaFetcher.observedClaudeQuota(for: file, maxAge: 3600, now: now))
+        let byName = Dictionary(uniqueKeysWithValues: quota.models.map { ($0.name, $0) })
+        XCTAssertEqual(byName["five-hour-session"]?.percentage, 100)
+        XCTAssertEqual(byName["five-hour-session"]?.resetTime, "", "a new 5h window starts on the next request")
+        XCTAssertEqual(byName["seven-day-weekly"]?.percentage, 100)
+        XCTAssertEqual(byName["seven-day-weekly"]?.resetTime, "2026-11-28T16:00:00Z")
+        XCTAssertEqual(byName["seven-day-fable"]?.percentage, 100)
+        XCTAssertEqual(byName["seven-day-fable"]?.resetTime, "2026-11-28T16:00:00Z")
     }
 
     func testClaudeWithoutObservationsFallsBackToUsageRequest() throws {

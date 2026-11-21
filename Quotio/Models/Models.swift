@@ -375,6 +375,8 @@ nonisolated struct AuthFile: Codable, Identifiable, Hashable, Sendable {
     var projectId: String? = nil
     /// Rate-limit headers the proxy observed on this credential's real traffic.
     var quota: QuotaObservation? = nil
+    /// Per-model observations; Fable traffic carries the Fable-scoped weekly window.
+    var modelQuotas: [String: QuotaObservation]? = nil
 
     nonisolated struct QuotaObservation: Codable, Hashable, Sendable {
         let observedAt: String?
@@ -416,6 +418,7 @@ nonisolated struct AuthFile: Codable, Identifiable, Hashable, Sendable {
         case authIndex = "auth_index"
         case projectId = "project_id"
         case quota
+        case modelQuotas = "model_quotas"
         case idToken = "id_token"
         case statusMessage = "status_message"
         case runtimeOnly = "runtime_only"

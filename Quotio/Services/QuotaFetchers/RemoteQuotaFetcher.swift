@@ -80,7 +80,8 @@ nonisolated enum RemoteQuotaFetcher {
                 sevenDay: ClaudeCodeQuotaFetcher.parseQuotaUsage(from: json["seven_day"] as? [String: Any]),
                 sevenDaySonnet: ClaudeCodeQuotaFetcher.parseQuotaUsage(from: json["seven_day_sonnet"] as? [String: Any]),
                 sevenDayOpus: ClaudeCodeQuotaFetcher.parseQuotaUsage(from: json["seven_day_opus"] as? [String: Any]),
-                extraUsage: ClaudeCodeQuotaFetcher.parseExtraUsage(from: json["extra_usage"] as? [String: Any])
+                extraUsage: ClaudeCodeQuotaFetcher.parseExtraUsage(from: json["extra_usage"] as? [String: Any]),
+                scopedWeekly: ClaudeCodeQuotaFetcher.scopedWeeklyModels(from: json)
             )
             return ClaudeCodeQuotaFetcher.quotaData(from: info)
         case .codex:
@@ -135,18 +136,42 @@ nonisolated enum RemoteQuotaFetcher {
               let observedAt = observation.observedAt.flatMap(parseDate),
               now.timeIntervalSince(observedAt) <= maxAge else { return nil }
 
-        func window(_ name: String, _ prefix: String) -> ModelQuota? {
-            guard let used = signals["Anthropic-Ratelimit-Unified-\(prefix)-Utilization"].flatMap(Double.init) else { return nil }
-            let reset = signals["Anthropic-Ratelimit-Unified-\(prefix)-Reset"]
+        // A window whose reset passed without a newer observation saw no proxy traffic since,
+        // so it is fresh. Weekly windows keep a fixed 7-day cadence; a 5h window only starts
+        // on the next request, so its reset is unknown until then.
+        func window(_ name: String, _ prefix: String, in signals: [String: String], period: TimeInterval?) -> ModelQuota? {
+            guard var used = signals["Anthropic-Ratelimit-Unified-\(prefix)-Utilization"].flatMap(Double.init) else { return nil }
+            var reset = signals["Anthropic-Ratelimit-Unified-\(prefix)-Reset"]
                 .flatMap(TimeInterval.init)
-                .map { ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: $0)) } ?? ""
-            return ModelQuota(name: name, percentage: max(0, min(100, 100 - used * 100)), resetTime: reset)
+                .map { Date(timeIntervalSince1970: $0) }
+            if let past = reset, past <= now {
+                used = 0
+                reset = period.map { period in
+                    past.addingTimeInterval((floor(now.timeIntervalSince(past) / period) + 1) * period)
+                }
+            }
+            let resetTime = reset.map { ISO8601DateFormatter().string(from: $0) } ?? ""
+            return ModelQuota(name: name, percentage: max(0, min(100, 100 - used * 100)), resetTime: resetTime)
         }
 
-        let models = [window("five-hour-session", "5h"), window("seven-day-weekly", "7d")].compactMap { $0 }
+        let week: TimeInterval = 7 * 24 * 60 * 60
+        var models = [
+            window("five-hour-session", "5h", in: signals, period: nil),
+            window("seven-day-weekly", "7d", in: signals, period: week),
+        ].compactMap { $0 }
+        // The Fable-scoped weekly window (`7d_oi`) only appears on Fable responses, so the
+        // newest Fable observation may live under model_quotas rather than the latest request.
+        let fableSignals = [signals] + (file.modelQuotas ?? [:])
+            .filter { $0.key.localizedCaseInsensitiveContains("fable") }
+            .sorted { ($0.value.observedAt ?? "") > ($1.value.observedAt ?? "") }
+            .compactMap { $0.value.signals }
+        if let fable = fableSignals.lazy.compactMap({ window("seven-day-fable", "7d_oi", in: $0, period: week) }).first {
+            models.append(fable)
+        }
         guard !models.isEmpty else { return nil }
-        let rejected = signals["Anthropic-Ratelimit-Unified-Status"] == "rejected"
-        return ProviderQuotaData(models: models, lastUpdated: observedAt, isForbidden: rejected)
+        // A rate-limited window shows as 0% left on its own bar; `isForbidden` is reserved for
+        // auth failures, which replace the whole menu bar item with a warning.
+        return ProviderQuotaData(models: models, lastUpdated: observedAt)
     }
 
     private static func parseDate(_ value: String) -> Date? {

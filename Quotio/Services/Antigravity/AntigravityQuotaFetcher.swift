@@ -255,6 +255,7 @@ nonisolated struct ModelQuota: Codable, Identifiable, Sendable {
         case "seven-day-weekly": return "Weekly"
         case "seven-day-sonnet": return "Sonnet"
         case "seven-day-opus": return "Opus"
+        case "seven-day-fable": return "Fable"
         case "extra-usage": return "Extra"
         case "weekly-usage": return "Weekly"
         case "sonnet-only": return "Sonnet"

@@ -26,6 +26,8 @@ nonisolated struct ClaudeCodeQuotaInfo: Sendable {
     let sevenDaySonnet: QuotaUsage?
     let sevenDayOpus: QuotaUsage?
     let extraUsage: ExtraUsage?
+    /// Per-model weekly windows from the usage response's `limits` list (e.g. Fable).
+    var scopedWeekly: [ModelQuota] = []
 
     struct QuotaUsage: Sendable {
         let utilization: Double  // Percentage used (0-100)
@@ -297,6 +299,7 @@ actor ClaudeCodeQuotaFetcher {
             let sevenDaySonnet = Self.parseQuotaUsage(from: json["seven_day_sonnet"] as? [String: Any])
             let sevenDayOpus = Self.parseQuotaUsage(from: json["seven_day_opus"] as? [String: Any])
             let extraUsage = Self.parseExtraUsage(from: json["extra_usage"] as? [String: Any])
+            let scopedWeekly = Self.scopedWeeklyModels(from: json)
 
             return .success(ClaudeCodeQuotaInfo(
                 accessToken: accessToken,
@@ -305,7 +308,8 @@ actor ClaudeCodeQuotaFetcher {
                 sevenDay: sevenDay,
                 sevenDaySonnet: sevenDaySonnet,
                 sevenDayOpus: sevenDayOpus,
-                extraUsage: extraUsage
+                extraUsage: extraUsage,
+                scopedWeekly: scopedWeekly
             ))
         } catch {
             NSLog("[ClaudeQuota] Network error: \(error.localizedDescription)")
@@ -561,8 +565,33 @@ actor ClaudeCodeQuotaFetcher {
             }
             models.append(model)
         }
+        // Skip scoped windows that duplicate a dedicated field (e.g. Opus/Sonnet).
+        for model in info.scopedWeekly where !models.contains(where: { $0.name == model.name }) {
+            models.append(model)
+        }
         guard !models.isEmpty else { return nil }
         return ProviderQuotaData(models: models, lastUpdated: Date(), isForbidden: false, planType: nil)
+    }
+
+    /// Per-model weekly windows (e.g. Fable) from the usage response's `limits` list.
+    nonisolated static func scopedWeeklyModels(from json: [String: Any]) -> [ModelQuota] {
+        guard let limits = json["limits"] as? [[String: Any]] else { return [] }
+        return limits.compactMap { limit in
+            guard limit["kind"] as? String == "weekly_scoped",
+                  let model = (limit["scope"] as? [String: Any])?["model"] as? [String: Any],
+                  let name = model["display_name"] as? String, !name.isEmpty,
+                  let used = (limit["percent"] as? NSNumber)?.doubleValue else { return nil }
+            // "Fable" or "Claude Fable" -> "seven-day-fable".
+            var slug = name.lowercased()
+                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                .joined(separator: "-")
+            if slug.hasPrefix("claude-") { slug.removeFirst("claude-".count) }
+            return ModelQuota(
+                name: "seven-day-" + slug,
+                percentage: max(0, min(100, 100 - used)),
+                resetTime: limit["resets_at"] as? String ?? ""
+            )
+        }
     }
     
     /// Fetch quota from a single auth file

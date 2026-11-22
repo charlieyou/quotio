@@ -785,6 +785,281 @@ private struct MenuNetworkInfoView: View {
     }
 }
 
+// MARK: - Account Health Indicator & Hover Tooltip
+
+nonisolated enum MenuAccountHealthState: Equatable, Sendable {
+    case active
+    case cooling
+    case error
+    case disabled
+}
+
+nonisolated struct MenuAccountHealthIndicator: Equatable, Sendable {
+    let state: MenuAccountHealthState
+    let detailMessage: String?
+
+    static func matchingAuthFile(
+        in authFiles: [AuthFile],
+        provider: AIProvider,
+        accountKey: String
+    ) -> AuthFile? {
+        let matches = authFiles.filter {
+            $0.providerType == provider && $0.quotaLookupKey == accountKey
+        }
+        return matches.first { !$0.disabled } ?? matches.first
+    }
+
+    static func from(authFile: AuthFile?, isForbidden: Bool = false) -> MenuAccountHealthIndicator? {
+        if let authFile {
+            let normalizedStatus = authFile.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let message = authFile.humanReadableStatus
+
+            if authFile.disabled {
+                return MenuAccountHealthIndicator(state: .disabled, detailMessage: message ?? "Account disabled")
+            }
+            if normalizedStatus == "error" || authFile.unavailable || isForbidden {
+                let fallback = isForbidden && normalizedStatus != "error" && !authFile.unavailable
+                    ? "Authentication error"
+                    : "Account error"
+                return MenuAccountHealthIndicator(state: .error, detailMessage: message ?? fallback)
+            }
+            if normalizedStatus == "cooling" || normalizedStatus == "outdated" {
+                let fallback = normalizedStatus == "outdated" ? "Outdated" : "Cooling down"
+                return MenuAccountHealthIndicator(state: .cooling, detailMessage: message ?? fallback)
+            }
+            if normalizedStatus == "active" || normalizedStatus == "ready" {
+                return MenuAccountHealthIndicator(state: .active, detailMessage: nil)
+            }
+            if let message {
+                return MenuAccountHealthIndicator(state: .error, detailMessage: message)
+            }
+            let detail = normalizedStatus.isEmpty ? nil : authFile.status.trimmingCharacters(in: .whitespacesAndNewlines).capitalized
+            return MenuAccountHealthIndicator(state: .disabled, detailMessage: detail)
+        }
+
+        if isForbidden {
+            return MenuAccountHealthIndicator(state: .error, detailMessage: "Authentication error")
+        }
+
+        return nil
+    }
+}
+
+@MainActor
+final class MenuHoverTooltipController {
+    static let shared = MenuHoverTooltipController()
+
+    private var panel: NSPanel?
+    private var currentOwner: UUID?
+
+    private init() {}
+
+    func show(
+        title: String,
+        message: String,
+        accentColor: Color,
+        anchorRect: NSRect,
+        owner: UUID
+    ) {
+        currentOwner = owner
+
+        let panel = ensurePanel()
+        let contentView = MenuHoverTooltipView(
+            title: title,
+            message: message,
+            accentColor: accentColor
+        )
+        let hostingView = NSHostingView(rootView: contentView)
+        let appearance = AppearanceManager.shared.appearanceMode.appKitAppearance
+        hostingView.appearance = appearance
+        panel.appearance = appearance
+        panel.contentView = hostingView
+
+        let size = hostingView.fittingSize
+        let origin = tooltipOrigin(for: size, anchorRect: anchorRect)
+        panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        panel.orderFront(nil)
+    }
+
+    func hide(owner: UUID) {
+        guard currentOwner == owner else { return }
+        hideAll()
+    }
+
+    func hideAll() {
+        currentOwner = nil
+        panel?.orderOut(nil)
+    }
+
+    private func ensurePanel() -> NSPanel {
+        if let panel { return panel }
+        let panel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.isReleasedWhenClosed = false
+        self.panel = panel
+        return panel
+    }
+
+    private func tooltipOrigin(for size: NSSize, anchorRect: NSRect) -> NSPoint {
+        let gap: CGFloat = 6
+        let screen = NSScreen.screens.first { $0.frame.contains(anchorRect.origin) } ?? NSScreen.main
+        let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+        var x = anchorRect.midX - size.width / 2
+        x = max(visibleFrame.minX + 8, min(x, visibleFrame.maxX - size.width - 8))
+
+        var y = anchorRect.maxY + gap
+        if y + size.height > visibleFrame.maxY - 8 {
+            y = max(visibleFrame.minY + 8, anchorRect.minY - size.height - gap)
+        }
+
+        return NSPoint(x: round(x), y: round(y))
+    }
+}
+
+private struct MenuHoverTooltipView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    let message: String
+    let accentColor: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(accentColor)
+                    .frame(width: 6, height: 6)
+                Text(title)
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary)
+            }
+
+            Text(message)
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: 260, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.12), lineWidth: 1)
+        )
+    }
+}
+
+private struct AnchorViewReader: NSViewRepresentable {
+    let onResolve: (NSView) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { onResolve(view) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { onResolve(nsView) }
+    }
+}
+
+private struct AccountStatusIndicatorView: View {
+    let indicator: MenuAccountHealthIndicator
+    @State private var ownerID = UUID()
+    @State private var anchorView: NSView?
+    @State private var isHovering = false
+
+    private var color: Color {
+        switch indicator.state {
+        case .active: return .green
+        case .cooling: return .orange
+        case .error: return .red
+        case .disabled: return .gray
+        }
+    }
+
+    private var tooltipTitle: String {
+        switch indicator.state {
+        case .active: return "Active"
+        case .cooling: return "Cooling"
+        case .error: return "Error"
+        case .disabled: return "Disabled"
+        }
+    }
+
+    private func syncTooltip() {
+        guard isHovering,
+              let message = indicator.detailMessage,
+              !message.isEmpty,
+              let anchorView,
+              let window = anchorView.window else {
+            MenuHoverTooltipController.shared.hide(owner: ownerID)
+            return
+        }
+
+        let rectInWindow = anchorView.convert(anchorView.bounds, to: nil)
+        let screenRect = window.convertToScreen(rectInWindow)
+        MenuHoverTooltipController.shared.show(
+            title: tooltipTitle,
+            message: message,
+            accentColor: color,
+            anchorRect: screenRect,
+            owner: ownerID
+        )
+    }
+
+    var body: some View {
+        Group {
+            switch indicator.state {
+            case .active, .disabled:
+                Circle()
+                    .fill(color)
+                    .frame(width: 7, height: 7)
+            case .error, .cooling:
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(color)
+            }
+        }
+        .padding(.horizontal, 3)
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .background(
+            AnchorViewReader { view in
+                if anchorView !== view {
+                    anchorView = view
+                    syncTooltip()
+                }
+            }
+        )
+        .onHover { hovering in
+            isHovering = hovering
+            syncTooltip()
+        }
+        .onChange(of: indicator) { _, _ in
+            syncTooltip()
+        }
+        .onDisappear {
+            isHovering = false
+            MenuHoverTooltipController.shared.hide(owner: ownerID)
+        }
+        .accessibilityLabel(tooltipTitle)
+        .accessibilityValue(indicator.detailMessage ?? "")
+    }
+}
+
 // MARK: Account Card View
 
 private struct MenuAccountCardView: View {
@@ -802,6 +1077,18 @@ private struct MenuAccountCardView: View {
 
     private var accountID: QuotaAccountID {
         QuotaAccountID(provider: provider, accountKey: accountKey)
+    }
+
+    private var matchingAuthFile: AuthFile? {
+        MenuAccountHealthIndicator.matchingAuthFile(
+            in: viewModel.authFiles,
+            provider: provider,
+            accountKey: accountKey
+        )
+    }
+
+    private var healthIndicator: MenuAccountHealthIndicator? {
+        MenuAccountHealthIndicator.from(authFile: matchingAuthFile, isForbidden: data.isForbidden)
     }
     
     private var displayEmail: String {
@@ -982,11 +1269,17 @@ private struct MenuAccountCardView: View {
                 .foregroundStyle(.secondary)
                 .opacity(0.8)
             
-            // Email
-            Text(displayEmail)
-                .font(.system(size: 12.5, weight: .semibold, design: .rounded))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+            // Email + Active/Error indicator
+            HStack(spacing: 4) {
+                Text(displayEmail)
+                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                if let healthIndicator {
+                    AccountStatusIndicatorView(indicator: healthIndicator)
+                }
+            }
             
             Spacer()
 

@@ -208,6 +208,7 @@ final class StatusBarManager: NSObject, NSMenuDelegate {
     }
     
     func menuDidClose(_ menu: NSMenu) {
+        MenuHoverTooltipController.shared.hideAll()
         DispatchQueue.main.async { [weak self] in
             self?.renderStatusBar()
         }
@@ -252,6 +253,7 @@ final class StatusBarManager: NSObject, NSMenuDelegate {
             }
         }
 
+        MenuHoverTooltipController.shared.hideAll()
         menu.appearance = AppearanceManager.shared.appearanceMode.appKitAppearance
         menu.removeAllItems()
 
@@ -272,6 +274,7 @@ final class StatusBarManager: NSObject, NSMenuDelegate {
     }
     
     func removeStatusItem() {
+        MenuHoverTooltipController.shared.hideAll()
         appearanceObservation = nil
         if let item = statusItem {
             NSStatusBar.system.removeStatusItem(item)

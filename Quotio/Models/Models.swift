@@ -482,31 +482,43 @@ nonisolated struct AuthFile: Codable, Identifiable, Hashable, Sendable {
     }
     
     var isReady: Bool {
-        status == "ready" && !disabled && !unavailable
+        (status == "ready" || status == "active") && !disabled && !unavailable
     }
     
     var statusColor: Color {
+        if disabled { return .gray }
         switch status {
-        case "ready": return disabled ? .gray : .green
+        case "ready", "active": return unavailable ? .red : .green
         case "cooling": return .orange
         case "error": return .red
-        default: return .gray
+        default: return unavailable ? .red : .gray
         }
     }
 
     /// Extracts a human-readable message from the status_message field.
     /// The field may contain raw JSON error blobs from providers (e.g., Antigravity/Google).
     var humanReadableStatus: String? {
-        guard let msg = statusMessage, !msg.isEmpty else { return nil }
+        guard let msg = statusMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !msg.isEmpty else {
+            return nil
+        }
 
         // If it looks like JSON, try to parse it
-        let trimmed = msg.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("{"),
-           let data = trimmed.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let error = json["error"] as? [String: Any],
-           let message = error["message"] as? String {
-            return message
+        if msg.hasPrefix("{"),
+           let data = msg.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let error = json["error"] as? [String: Any],
+               let message = error["message"] as? String {
+                let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+            if let errorString = json["error"] as? String {
+                let trimmed = errorString.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+            if let message = json["message"] as? String {
+                let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
         }
 
         // Already a plain string
@@ -516,13 +528,17 @@ nonisolated struct AuthFile: Codable, Identifiable, Hashable, Sendable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
         hasher.combine(disabled)
+        hasher.combine(unavailable)
         hasher.combine(status)
+        hasher.combine(statusMessage)
     }
 
     static func == (lhs: AuthFile, rhs: AuthFile) -> Bool {
         lhs.id == rhs.id &&
         lhs.disabled == rhs.disabled &&
-        lhs.status == rhs.status
+        lhs.unavailable == rhs.unavailable &&
+        lhs.status == rhs.status &&
+        lhs.statusMessage == rhs.statusMessage
     }
 }
 

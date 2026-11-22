@@ -500,7 +500,7 @@ struct ProvidersScreen: View {
             editingWarpToken = nil
             showWarpConnectionSheet = true
         } else {
-            viewModel.oauthState = nil
+            viewModel.cancelOAuth()
             selectedProvider = provider
         }
     }
@@ -877,6 +877,8 @@ struct OAuthSheet: View {
     @State private var hasStartedAuth = false
     @State private var selectedKiroMethod: AuthCommand = .kiroImport
     @State private var manualOAuthCode = ""
+    @State private var manualCallbackURL = ""
+    @State private var isSubmittingCallback = false
     @State private var modeManager = OperatingModeManager.shared
     
     private var isPolling: Bool {
@@ -960,9 +962,56 @@ struct OAuthSheet: View {
                 }
                 .frame(maxWidth: 360)
             }
+
+            if modeManager.isRemoteProxyMode,
+               let state = viewModel.oauthState,
+               state.provider == provider,
+               state.status == .polling,
+               state.isRemoteCallbackFlow {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let port = state.localRelayPort,
+                       state.localRelayStatus == .listening || state.localRelayStatus == .portBusy {
+                        HStack(spacing: 6) {
+                            Image(systemName: state.localRelayStatus == .listening ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                .foregroundStyle(state.localRelayStatus == .listening ? .green : .orange)
+                                .font(.caption)
+                            Text(
+                                String(
+                                    format: (state.localRelayStatus == .listening ? "oauth.remoteRelayListening" : "oauth.remoteRelayPortBusy").localized(),
+                                    "localhost:" + String(port)
+                                )
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        TextField("oauth.callbackURLPlaceholder".localized(), text: $manualCallbackURL)
+                            .textFieldStyle(.roundedBorder)
+                        Button("oauth.complete".localized()) {
+                            isSubmittingCallback = true
+                            Task {
+                                await viewModel.submitRemoteOAuthCallback(manualCallbackURL, provider: provider)
+                                isSubmittingCallback = false
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isSubmittingCallback || manualCallbackURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+
+                    if let callbackError = state.callbackSubmissionError {
+                        Text(callbackError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+                .frame(maxWidth: 380)
+            }
             
             HStack(spacing: 16) {
                 Button("action.cancel".localized(), role: .cancel) {
+                    manualCallbackURL = ""
                     viewModel.cancelOAuth()
                     onDismiss()
                 }
@@ -971,6 +1020,7 @@ struct OAuthSheet: View {
                 if isError {
                     Button {
                         hasStartedAuth = false
+                        manualCallbackURL = ""
                         Task {
                             await viewModel.startOAuth(for: provider, authMethod: provider == .kiro ? selectedKiroMethod : nil)
                         }
@@ -982,6 +1032,7 @@ struct OAuthSheet: View {
                 } else if !isSuccess {
                     Button {
                         hasStartedAuth = true
+                        manualCallbackURL = ""
                         Task {
                             await viewModel.startOAuth(for: provider, authMethod: provider == .kiro ? selectedKiroMethod : nil)
                         }
@@ -1009,6 +1060,13 @@ struct OAuthSheet: View {
                     try? await Task.sleep(nanoseconds: 1_500_000_000)
                     onDismiss()
                 }
+            }
+        }
+        .onDisappear {
+            if let state = viewModel.oauthState,
+               state.provider == provider,
+               state.status == .waiting || state.status == .polling {
+                viewModel.cancelOAuth()
             }
         }
     }

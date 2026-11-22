@@ -11009,6 +11009,38 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "完成" } }
       }
     },
+    "oauth.callbackURLPlaceholder" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Or paste callback URL (http://localhost:...)" } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Ou collez l’URL de rappel (http://localhost:...)" } },
+        "vi" : { "stringUnit" : { "state" : "translated", "value" : "Hoặc dán URL callback (http://localhost:...)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "或粘贴回调 URL (http://localhost:...)" } }
+      }
+    },
+    "oauth.invalidCallbackURL" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Enter a valid callback URL from the browser address bar." } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Saisissez une URL de rappel valide depuis la barre d’adresse du navigateur." } },
+        "vi" : { "stringUnit" : { "state" : "translated", "value" : "Nhập URL callback hợp lệ từ thanh địa chỉ trình duyệt." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请输入浏览器地址栏中的有效回调 URL。" } }
+      }
+    },
+    "oauth.remoteRelayListening" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Listening on %@ to forward the callback to your remote proxy." } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Écoute sur %@ pour transférer le rappel vers votre proxy distant." } },
+        "vi" : { "stringUnit" : { "state" : "translated", "value" : "Đang lắng nghe trên %@ để chuyển tiếp callback tới proxy từ xa." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在监听 %@ 以将回调转发至远程代理。" } }
+      }
+    },
+    "oauth.remoteRelayPortBusy" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not bind %@. After signing in, copy the localhost URL from your browser and paste it below." } },
+        "fr" : { "stringUnit" : { "state" : "translated", "value" : "Impossible d’écouter sur %@. Après la connexion, copiez l’URL localhost de votre navigateur et collez-la ci-dessous." } },
+        "vi" : { "stringUnit" : { "state" : "translated", "value" : "Không thể mở cổng %@. Sau khi đăng nhập, hãy sao chép URL localhost từ trình duyệt và dán bên dưới." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "无法绑定 %@。登录后请从浏览器复制 localhost URL 并粘贴到下方。" } }
+      }
+    },
     "oauth.authenticate" : {
       "extractionState" : "stale",
       "localizations" : {

@@ -141,6 +141,18 @@ nonisolated enum AIProvider: String, CaseIterable, Codable, Identifiable, Sendab
         case .clinePass: return ""
         }
     }
+
+    /// Provider identifier accepted by CLIProxyAPI's `POST /v0/management/oauth-callback`.
+    var oauthCallbackProvider: String? {
+        switch self {
+        case .claude: return "anthropic"
+        case .codex: return "codex"
+        case .qwen: return "qwen"
+        case .iflow: return "iflow"
+        case .antigravity: return "antigravity"
+        default: return nil
+        }
+    }
     
     /// Short symbol for menu bar display
     var menuBarSymbol: String {
@@ -574,6 +586,21 @@ nonisolated struct OAuthURLResponse: Codable, Sendable {
 
 nonisolated struct OAuthStatusResponse: Codable, Sendable {
     let status: String
+    let error: String?
+}
+
+nonisolated struct OAuthCallbackRequest: Codable, Sendable {
+    let provider: String?
+    let redirectURL: String
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case redirectURL = "redirect_url"
+    }
+}
+
+nonisolated struct OAuthCallbackResponse: Codable, Sendable {
+    let status: String?
     let error: String?
 }
 

@@ -4,11 +4,14 @@ import Network
 nonisolated final class MonitorOAuthCallbackServer: @unchecked Sendable {
     private let lock = NSLock()
     private var listener: NWListener?
+    private var startContinuation: CheckedContinuation<UInt16, Error>?
     private var callbackContinuation: CheckedContinuation<URL, Error>?
     private var pendingCallback: URL?
     private var timeoutWorkItem: DispatchWorkItem?
+    private var expectedPath: String?
+    private var boundPort: UInt16?
 
-    func start(preferredPort: UInt16? = nil) async throws -> UInt16 {
+    func start(preferredPort: UInt16? = nil, expectedPath: String? = nil) async throws -> UInt16 {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         let listener: NWListener
@@ -17,28 +20,67 @@ nonisolated final class MonitorOAuthCallbackServer: @unchecked Sendable {
         } else {
             listener = try NWListener(using: parameters, on: .any)
         }
-        self.listener = listener
+        configureListener(listener, expectedPath: expectedPath)
         listener.newConnectionHandler = { [weak self] connection in
             self?.handle(connection)
         }
         return try await withCheckedThrowingContinuation { continuation in
-            listener.stateUpdateHandler = { state in
+            setStartContinuation(continuation)
+            listener.stateUpdateHandler = { [weak self] state in
                 switch state {
                 case .ready:
-                    listener.stateUpdateHandler = nil
                     guard let port = listener.port?.rawValue else {
-                        continuation.resume(throwing: MonitorOAuthError.invalidResponse)
+                        listener.cancel()
+                        self?.completeStart(listener: listener, result: .failure(MonitorOAuthError.invalidResponse))
                         return
                     }
-                    continuation.resume(returning: port)
+                    self?.completeStart(listener: listener, result: .success(port))
+                case .waiting(let error):
+                    listener.cancel()
+                    self?.completeStart(listener: listener, result: .failure(error))
                 case .failed(let error):
-                    listener.stateUpdateHandler = nil
-                    continuation.resume(throwing: error)
+                    listener.cancel()
+                    self?.completeStart(listener: listener, result: .failure(error))
+                case .cancelled:
+                    self?.completeStart(listener: listener, result: .failure(CancellationError()))
                 default:
                     break
                 }
             }
             listener.start(queue: DispatchQueue(label: "\(AppIdentity.bundleIdentifier).monitor-oauth"))
+        }
+    }
+
+    private func configureListener(_ listener: NWListener, expectedPath: String?) {
+        lock.lock()
+        self.listener = listener
+        self.expectedPath = expectedPath
+        self.boundPort = nil
+        lock.unlock()
+    }
+
+    private func setStartContinuation(_ continuation: CheckedContinuation<UInt16, Error>) {
+        lock.lock()
+        self.startContinuation = continuation
+        lock.unlock()
+    }
+
+    private func completeStart(listener: NWListener, result: Result<UInt16, Error>) {
+        lock.lock()
+        let continuation = startContinuation
+        startContinuation = nil
+        if case .success(let port) = result {
+            boundPort = port
+        } else if self.listener === listener {
+            self.listener = nil
+        }
+        lock.unlock()
+        listener.stateUpdateHandler = nil
+        switch result {
+        case .success(let port):
+            continuation?.resume(returning: port)
+        case .failure(let error):
+            continuation?.resume(throwing: error)
         }
     }
 
@@ -110,11 +152,28 @@ nonisolated final class MonitorOAuthCallbackServer: @unchecked Sendable {
                 return
             }
             let parts = requestLine.split(separator: " ")
-            guard parts.count >= 2,
-                  let url = URL(string: "http://localhost\(parts[1])") else {
+            guard parts.count >= 2 else {
                 connection.cancel()
                 return
             }
+            lock.lock()
+            let port = boundPort
+            let expectedPath = expectedPath
+            lock.unlock()
+
+            let target = String(parts[1])
+            let base = port.map { "http://localhost:\($0)" } ?? "http://localhost"
+            guard let url = URL(string: base + target) else {
+                connection.cancel()
+                return
+            }
+
+            if let expectedPath, url.path != expectedPath {
+                let notFound = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                connection.send(content: Data(notFound.utf8), completion: .contentProcessed { _ in connection.cancel() })
+                return
+            }
+
             let body = "<html><body><h2>Authentication complete</h2><p>You can return to Quotio.</p></body></html>"
             let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
             connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })

@@ -288,6 +288,53 @@ actor ManagementAPIClient {
         let data = try await makeRequest("/get-auth-status?state=\(state)")
         return try JSONDecoder().decode(OAuthStatusResponse.self, from: data)
     }
+
+    /// Forward an OAuth callback URL captured locally to CLIProxyAPI's `/v0/management/oauth-callback`.
+    func submitOAuthCallback(provider: AIProvider, redirectURL: String) async throws {
+        guard let url = URL(string: "\(baseURL)/oauth-callback") else {
+            throw APIError.invalidURL
+        }
+
+        let payload = OAuthCallbackRequest(
+            provider: provider.oauthCallbackProvider,
+            redirectURL: redirectURL
+        )
+        let body = try JSONEncoder().encode(payload)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(authKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("close", forHTTPHeaderField: "Connection")
+        request.httpBody = body
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch let error as URLError {
+            throw APIError.connectionError(error.localizedDescription)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        let decoded = try? JSONDecoder().decode(OAuthCallbackResponse.self, from: data)
+        guard 200...299 ~= httpResponse.statusCode else {
+            if let message = decoded?.error, !message.isEmpty {
+                throw APIError.serverError(httpResponse.statusCode, message)
+            }
+            throw APIError.httpError(httpResponse.statusCode)
+        }
+
+        if let status = decoded?.status, status != "ok" {
+            let message = decoded?.error ?? "OAuth callback failed"
+            throw APIError.serverError(httpResponse.statusCode, message)
+        }
+    }
     
     func fetchLogs(after: Int? = nil) async throws -> LogsResponse {
         var endpoint = "/logs"
@@ -613,6 +660,7 @@ nonisolated enum APIError: LocalizedError {
     case invalidURL
     case invalidResponse
     case httpError(Int)
+    case serverError(Int, String)
     case decodingError(String)
     case connectionError(String)
     
@@ -621,6 +669,7 @@ nonisolated enum APIError: LocalizedError {
         case .invalidURL: return "Invalid URL"
         case .invalidResponse: return "Invalid response"
         case .httpError(let code): return "HTTP error: \(code)"
+        case .serverError(_, let msg): return msg
         case .decodingError(let msg): return "Decoding error: \(msg)"
         case .connectionError(let msg): return "Connection error: \(msg)"
         }

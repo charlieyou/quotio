@@ -90,6 +90,9 @@ final class QuotaViewModel {
     }
     var errorMessage: String?
     var oauthState: OAuthState?
+    @ObservationIgnored private var oauthAttemptID: UUID?
+    @ObservationIgnored private var remoteOAuthCallbackServer: MonitorOAuthCallbackServer?
+    @ObservationIgnored private var remoteOAuthRelayTask: Task<Void, Never>?
 
     /// OAuth launch mode for controlling browser behavior
     enum OAuthLaunchMode {
@@ -448,6 +451,7 @@ final class QuotaViewModel {
     /// Clears everything that belongs to the previous server so Remote never shows this Mac's
     /// accounts and Local/Monitor never act on (or display) the remote server's.
     private func resetForModeChange() async {
+        cancelOAuth()
         refreshTask?.cancel()
         refreshTask = nil
         if let existingClient = _apiClient {
@@ -2368,28 +2372,140 @@ final class QuotaViewModel {
             return
         }
 
+        stopRemoteOAuthRelay()
+        let attemptID = UUID()
+        oauthAttemptID = attemptID
         oauthState = OAuthState(provider: provider, status: .waiting)
         
         do {
             let response = try await client.getOAuthURL(for: provider)
+            guard !Task.isCancelled, oauthAttemptID == attemptID else { return }
             
             guard response.status == "ok", let urlString = response.url, let state = response.state else {
                 oauthState = OAuthState(provider: provider, status: .error, error: response.error)
                 return
             }
+
+            var isRemoteCallbackFlow = false
+            var localRelayStatus: OAuthState.LocalRelayStatus = .none
+            var localRelayPort: UInt16?
+
+            if modeManager.isRemoteProxyMode,
+               let target = RemoteOAuthCallbackTarget.parse(fromAuthURL: urlString) {
+                isRemoteCallbackFlow = true
+                localRelayPort = target.port
+                let started = await startRemoteOAuthRelay(
+                    target: target,
+                    attemptID: attemptID,
+                    state: state,
+                    provider: provider,
+                    client: client
+                )
+                guard !Task.isCancelled, oauthAttemptID == attemptID else {
+                    if oauthAttemptID == attemptID {
+                        stopRemoteOAuthRelay()
+                    }
+                    return
+                }
+                localRelayStatus = started ? .listening : .portBusy
+            }
             
             // Store URL for copy/open buttons
-            oauthState = OAuthState(provider: provider, status: .polling, state: state, authURL: urlString)
+            oauthState = OAuthState(
+                provider: provider,
+                status: .polling,
+                state: state,
+                authURL: urlString,
+                isRemoteCallbackFlow: isRemoteCallbackFlow,
+                localRelayStatus: localRelayStatus,
+                localRelayPort: localRelayPort
+            )
             
             // Auto-open browser if launchMode is .autoOpen
             if launchMode == .autoOpen, let url = URL(string: urlString) {
                 NSWorkspace.shared.open(url)
             }
             
-            await pollOAuthStatus(state: state, provider: provider)
+            await pollOAuthStatus(attemptID: attemptID, state: state, provider: provider)
             
         } catch {
+            guard oauthAttemptID == attemptID else { return }
+            stopRemoteOAuthRelay()
             oauthState = OAuthState(provider: provider, status: .error, error: error.localizedDescription)
+        }
+    }
+
+    private func startRemoteOAuthRelay(
+        target: RemoteOAuthCallbackTarget,
+        attemptID: UUID,
+        state: String,
+        provider: AIProvider,
+        client: ManagementAPIClient
+    ) async -> Bool {
+        stopRemoteOAuthRelay()
+        let server = MonitorOAuthCallbackServer()
+        do {
+            _ = try await server.start(preferredPort: target.port, expectedPath: target.path)
+        } catch {
+            Log.api("Remote OAuth loopback relay could not bind localhost:\(target.port): \(error.localizedDescription)")
+            return false
+        }
+
+        guard !Task.isCancelled, oauthAttemptID == attemptID else {
+            server.stop()
+            return false
+        }
+
+        remoteOAuthCallbackServer = server
+        remoteOAuthRelayTask = Task { [weak self] in
+            do {
+                let callbackURL = try await server.waitForCallback(timeout: .seconds(180))
+                try await client.submitOAuthCallback(provider: provider, redirectURL: callbackURL.absoluteString)
+                await MainActor.run {
+                    guard let self, self.oauthAttemptID == attemptID, self.oauthState?.state == state else { return }
+                    self.oauthState?.localRelayStatus = .submitted
+                    self.oauthState?.callbackSubmissionError = nil
+                    self.remoteOAuthCallbackServer = nil
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    guard let self, self.oauthAttemptID == attemptID, self.oauthState?.state == state, self.oauthState?.status == .polling else { return }
+                    self.oauthState?.localRelayStatus = .none
+                    self.oauthState?.callbackSubmissionError = error.localizedDescription
+                    self.remoteOAuthCallbackServer = nil
+                }
+            }
+        }
+        return true
+    }
+
+    private func stopRemoteOAuthRelay() {
+        remoteOAuthRelayTask?.cancel()
+        remoteOAuthRelayTask = nil
+        remoteOAuthCallbackServer?.stop()
+        remoteOAuthCallbackServer = nil
+    }
+
+    func submitRemoteOAuthCallback(_ rawInput: String, provider: AIProvider) async {
+        guard let client = apiClient, let attemptID = oauthAttemptID else { return }
+        guard let normalized = RemoteOAuthCallbackTarget.normalizedCallbackURL(from: rawInput) else {
+            oauthState?.callbackSubmissionError = "oauth.invalidCallbackURL".localized()
+            return
+        }
+
+        oauthState?.callbackSubmissionError = nil
+        do {
+            try await client.submitOAuthCallback(provider: provider, redirectURL: normalized)
+            guard oauthAttemptID == attemptID else { return }
+            stopRemoteOAuthRelay()
+            oauthState?.localRelayStatus = .submitted
+        } catch is CancellationError {
+            return
+        } catch {
+            guard oauthAttemptID == attemptID else { return }
+            oauthState?.callbackSubmissionError = error.localizedDescription
         }
     }
 
@@ -2550,21 +2666,40 @@ final class QuotaViewModel {
         oauthState = OAuthState(provider: .kiro, status: .error, error: "Authentication timeout")
     }
     
-    private func pollOAuthStatus(state: String, provider: AIProvider) async {
+    private func pollOAuthStatus(attemptID: UUID, state: String, provider: AIProvider) async {
         guard let client = apiClient else { return }
+        defer {
+            if oauthAttemptID == attemptID {
+                stopRemoteOAuthRelay()
+            }
+        }
         
         for _ in 0..<60 {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled,
+                  oauthAttemptID == attemptID,
+                  oauthState?.state == state,
+                  oauthState?.status == .polling else {
+                return
+            }
             
             do {
                 let response = try await client.pollOAuthStatus(state: state)
+                guard !Task.isCancelled,
+                      oauthAttemptID == attemptID,
+                      oauthState?.state == state,
+                      oauthState?.status == .polling else {
+                    return
+                }
                 
                 switch response.status {
                 case "ok":
+                    stopRemoteOAuthRelay()
                     oauthState = OAuthState(provider: provider, status: .success)
                     await refreshData()
                     return
                 case "error":
+                    stopRemoteOAuthRelay()
                     oauthState = OAuthState(provider: provider, status: .error, error: response.error)
                     return
                 default:
@@ -2575,10 +2710,15 @@ final class QuotaViewModel {
             }
         }
         
-        oauthState = OAuthState(provider: provider, status: .error, error: "OAuth timeout")
+        if oauthAttemptID == attemptID, oauthState?.state == state, oauthState?.status == .polling {
+            stopRemoteOAuthRelay()
+            oauthState = OAuthState(provider: provider, status: .error, error: "OAuth timeout")
+        }
     }
     
     func cancelOAuth() {
+        oauthAttemptID = nil
+        stopRemoteOAuthRelay()
         Task { await MonitorOAuthCoordinator.shared.cancel() }
         oauthState = nil
     }
@@ -3116,8 +3256,16 @@ struct OAuthState {
     var state: String?
     var error: String?
     var authURL: String?
+    var isRemoteCallbackFlow: Bool = false
+    var localRelayStatus: LocalRelayStatus = .none
+    var localRelayPort: UInt16? = nil
+    var callbackSubmissionError: String? = nil
     
     enum OAuthStatus {
         case waiting, polling, success, error
+    }
+
+    enum LocalRelayStatus: Equatable {
+        case none, listening, portBusy, submitted
     }
 }
